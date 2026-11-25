@@ -1,120 +1,350 @@
 # Hybrid Consent-Driven Desktop Grid
 
-**Hybrid Consent-Driven Desktop Grid with Cloud-Burst Overflow for Interrupt-Tolerant Scientific Computing on Campus Workstations**
+<p align="center">
+  <a href="#-about">About</a> &nbsp;•&nbsp;
+  <a href="#-the-solution-architecture">The Solution Architecture</a> &nbsp;•&nbsp;
+  <a href="#-research">Research</a> &nbsp;•&nbsp;
+  <a href="#-running">Running</a> &nbsp;•&nbsp;
+  <a href="#-tests">Tests</a> &nbsp;•&nbsp;
+  <a href="#-references">References</a> &nbsp;•&nbsp;
+  <a href="#-tech-stack">Tech Stack</a>
+</p>
 
-Campus-first master–worker grid: **OpenMP inside each worker**, reclaim-aware task redistribution, and **policy-driven cloud-burst** overflow. Built for classroom/LAN pilots with optional free-tier AWS (operator-owned).
+<p align="center">
+  <em>Campus-first scientific computing · OpenMP workers · reclaim-aware scheduling · policy-driven cloud burst</em>
+</p>
 
-> Full modeling, layers, protocol, reclaim/burst paths, and build map: **[`docs/architecture.md`](docs/architecture.md)**
+| Layer | Artifact | Status |
+|-------|:--------:|:------:|
+| OpenMP kernels | `heat2d` · `batch` · `irregular` | implemented |
+| Master / coordinator | peer-first · reclaim · burst | implemented |
+| Campus worker | consent · QoS · pause/leave | implemented |
+| Cloud overflow | `local_sim` · AWS stubs | implemented |
+| Experiment package | campus / hybrid / reclaim / cloud_only | implemented |
+
+> Deep design notes (layers, protocol, reclaim/burst, deployment): **[`docs/architecture.md`](docs/architecture.md)**
 
 ---
 
-## Architecture at a glance
+## About
+
+The main objective of this **hybrid HPC–cloud** project is a working prototype of **interrupt-tolerant scientific computing** on **consented campus workstations**, with **short-lived cloud overflow** when peer capacity, reclaim pressure, or deadline risk demands it.
+
+University labs and student laptops hold large amounts of unused CPU during free periods and idle intervals. Dedicated clusters are expensive; continuous public-cloud use is expensive too. Existing volunteer platforms prove idle pooling is feasible, yet classroom reality differs: a participant may **withdraw at any moment**, and the owner’s interactive work must not be harmed.
+
+This repository interprets that problem as an integrated fabric:
+
+- **Consent-first** campus peers (plain-language disclosure before any remote work)
+- **OpenMP** shared-memory parallelism *inside* each worker
+- **Task-queue** distribution *across* machines (churn-tolerant; not default MPI-over-Wi-Fi)
+- **Reclaim as a normal event** (checkpoint + requeue), not a rare failure
+- **Policy-driven cloud burst** that prefers campus capacity and retires idle VMs
+
+> Idle campus workstations can support meaningful scientific computing when participation is consented, interruption is expected, and multicore CPUs are used carefully.
+
+### Give a Star!
+
+If this research prototype is useful for your course, lab, or paper baseline, consider starring the repository.
+
+---
+
+## The Solution Architecture
 
 ```mermaid
 flowchart TB
-  subgraph Ops["Operator"]
-    CLI["master.client / dashboard"]
+  subgraph Ops["Operator plane"]
+    CLI["Job client / force-burst"]
+    DASH["Optional dashboard"]
   end
 
-  subgraph Master["Master node"]
-    SRV["TCP server :9100"]
+  subgraph Master["Master / Coordinator"]
+    TCP["TCP JSON protocol :9100"]
     SCH["Peer-first scheduler"]
     REC["Reclaim manager"]
     BUR["Burst controller"]
     MET["Metrics + object store"]
-    SRV --> SCH
+    TCP --> SCH
     SCH --> REC
     SCH --> BUR
-    SRV --> MET
+    TCP --> MET
   end
 
-  subgraph Campus["Campus peers"]
-    W1["Worker + consent + QoS"]
-    W2["Worker + OpenMP kernels"]
+  subgraph Campus["Campus peer pool"]
+    CW1["Worker · consent · QoS"]
+    CW2["Worker · OpenMP kernels"]
   end
 
-  subgraph Cloud["Cloud overflow"]
-    C1["Same worker image"]
-    C2["Short-lived VM / local_sim"]
+  subgraph Cloud["Cloud-burst overflow"]
+    VM1["Same worker image"]
+    VM2["local_sim or AWS VM"]
   end
 
-  STORE[("Checkpoints / results\nlocal or S3")]
+  STORE[("Checkpoints / results\nlocal data/ or S3")]
 
-  CLI -->|JOB_SUBMIT| SRV
-  SRV <-->|REGISTER / HEARTBEAT / TASK_*| W1
-  SRV <-->|TASK_*| W2
-  BUR -->|launch / retire| C1
-  BUR --> C2
-  SRV <-->|same protocol| C1
+  CLI --> TCP
+  DASH --> TCP
+  TCP <-->|REGISTER HEARTBEAT TASK_* LEAVE| CW1
+  TCP <--> CW2
+  BUR -->|launch / retire| VM1
+  BUR --> VM2
+  TCP <-->|same protocol| VM1
   MET --> STORE
-  W1 --> STORE
-  C1 --> STORE
+  CW1 -.-> STORE
+  VM1 -.-> STORE
 ```
+
+**Fig. 1** — Hybrid logical architecture: campus peers with cloud-burst overflow.
 
 ```mermaid
 flowchart LR
-  J[Scientific job] --> Q[Task queue]
-  Q --> P1[Campus OpenMP]
-  Q --> P2[Campus OpenMP]
-  Q -.->|policy burst| P3[Cloud OpenMP]
-  P1 --> M[Merge + metrics]
-  P2 --> M
-  P3 --> M
+  subgraph Layers
+    L4["Presentation / ops\nconsent · controls · dashboard · client"]
+    L3["Orchestration\nschedule · reclaim · burst · metrics"]
+    L2["Execution\nOpenMP kernels"]
+    L1["Platform\nTCP protocol · storage · Docker/AWS"]
+  end
+  L4 --> L3 --> L2 --> L1
 ```
 
-How layers, messages, reclaim, and burst decisions fit together is documented in [`docs/architecture.md`](docs/architecture.md) — not duplicated here.
+**Fig. 2** — Layered software view (orchestration separates volatile peers from local OpenMP speedup).
+
+> Full narrative, message table, policy conditions, and repository build map: [`docs/architecture.md`](docs/architecture.md)
 
 ---
 
-## Quick start
+## Research
+
+<details>
+<summary><strong>Volunteer computing &amp; desktop grids</strong></summary>
+
+<br/>
+
+BOINC-style and institutional desktop grids show that idle PCs can host scientific work units. Classroom sessions differ from wide-area donation: participation is short, supervised, and LAN-oriented; tasks must tolerate rapid leave.
+
+This project keeps the **opt-in client–server work-unit** idea, but scopes it to a **consent popup + campus peer pool**, with OpenMP inside each volunteer worker.
+
+</details>
+
+<details>
+<summary><strong>Reclaim as a first-class event</strong></summary>
+
+<br/>
+
+Cluster managers often treat node loss as failure. Campus GPU-sharing research stresses **owner autonomy**: reclaim without prior negotiation.
+
+Here, leave and missed heartbeats **requeue** unfinished chunks. Optional checkpoints land in local/`S3` storage. End-to-end **reclaim recovery** is measured from requeue until successful re-complete—not only leave-handler latency.
+
+</details>
+
+<details>
+<summary><strong>Hybrid parallelism: OpenMP inside, tasks across</strong></summary>
+
+<br/>
+
+Hybrid MPI+OpenMP is mature on stable clusters. On volatile student devices, tightly coupled MPI is a poor default.
+
+The pragmatic split used here:
+
+```text
+Job
+ └─ distributed task queue          ← across campus / cloud workers
+      └─ OpenMP parallel region    ← inside each worker (CPU-capped)
+```
+
+Kernels: tiled **heat2d**, embarrassingly parallel **batch**, mildly **irregular** work for stragglers.
+
+</details>
+
+<details>
+<summary><strong>Owner QoS as a scheduling constraint</strong></summary>
+
+<br/>
+
+Throughput-maximizing grids can ignore browser/IDE latency. This prototype treats owner protection as first-class:
+
+| Control | Mechanism |
+|---------|-----------|
+| Consent gate | Work starts only after acceptance |
+| CPU cap | `OMP_NUM_THREADS` / kernel `--threads` |
+| Process priority | Below-normal by default |
+| Idle-only | Wait on low CPU busy ratio |
+| Pause / leave | Stdin `p` / `r` / `l` (+ protocol) |
+
+</details>
+
+<details>
+<summary><strong>Policy-driven cloud burst</strong></summary>
+
+<br/>
+
+Industry hybrid HPC–cloud practice uses on-prem/edge first, then bursts under load or deadline pressure.
+
+Burst when **any** configured condition holds (under a max VM cap):
+
+- Too few consented campus peers
+- Sustained high reclaim / retry pressure
+- Projected finish misses the deadline
+- Operator force-burst (controlled experiments)
+
+Idle cloud workers shut down after timeout. Modes: **`local_sim`** (same process image) and **`aws`** (operator AMI/scripts).
+
+</details>
+
+<details>
+<summary><strong>Research gaps addressed</strong></summary>
+
+<br/>
+
+| Gap | Claim in this prototype |
+|-----|-------------------------|
+| A — Reclaim on campus peers | Leave/heartbeat → requeue + optional checkpoint |
+| B — Owner QoS | Caps, priority, idle-only, one-click leave |
+| C — Hybrid local parallelism | OpenMP in-worker + task queue across nodes |
+| D — Policy cloud burst | Peer shortage / reclaim / deadline / force |
+| E — Lightweight stack | Minimal consent-first fabric vs heavy middleware |
+
+</details>
+
+---
+
+## Running
+
+### One-shot (recommended)
 
 ```powershell
 .\scripts\run_all.ps1
 ```
 
-Builds OpenMP kernels → installs Python deps → runs tests → local hybrid demo → experiment traces (`data/logs`, `experiments/out`).
+Build OpenMP kernels → install Python deps → pytest → hybrid demo → experiment scenarios → metrics table.
 
-### Manual
+### Development
 
 ```powershell
 .\scripts\build_kernels.ps1
 py -3 -m pip install -r requirements.txt
 $env:PYTHONPATH = (Get-Location)
+
+# terminal 1
 py -3 -m master
-# other terminals:
+
+# terminal 2..N  (campus peers)
 py -3 -m worker --master 127.0.0.1:9100 --auto-consent
+
+# submit
 py -3 -m master.client --kernel heat2d --policy hybrid --chunks 8
 ```
 
-AWS: fill `config/default.yaml` → `burst.aws_*`, set `burst.mode: aws`. Stubs: `scripts/aws_launch_worker.ps1`. Details in the architecture doc’s deployment section.
+Owner hotkeys on a TTY worker: `p` pause · `r` resume · `l` leave · `s` status. Automation should pass `--no-controls`.
+
+Optional dashboard:
+
+```powershell
+py -3 dashboard\app.py --port 8080
+```
+
+### Policies
+
+| Policy | Behavior |
+|--------|----------|
+| `campus_only` | No cloud overflow |
+| `hybrid` | Peer-first + policy burst |
+| `cloud_only` | Burst workers only |
+
+### Cloud / AWS (operator-owned)
+
+1. Configure `config/default.yaml` → `burst.aws_*`
+2. Set `burst.mode: aws` (default remains `local_sim`)
+3. Ensure master TCP **9100** is reachable from burst VMs
+4. Use `docker/Dockerfile` or bake `/opt/hpc-grid` into an AMI
+5. Launch path: `scripts/aws_launch_worker.ps1` / `.sh`
+
+### Experiments
+
+```powershell
+.\scripts\run_experiments.ps1
+```
+
+Scenarios include campus-only heat/batch/irregular, mid-job reclaim, hybrid force-burst, and cloud-only batch. Artifacts: `data/logs/metrics.csv`, `experiments/out/`.
+
+More ops detail: [`docs/user_guide.md`](docs/user_guide.md)
 
 ---
 
-## Repository map
+## Tests
+
+```powershell
+$env:PYTHONPATH = (Get-Location)
+py -3 -m pytest tests -q
+```
+
+| Suite | Focus |
+|-------|--------|
+| Unit | Protocol, scheduler, burst policy, storage/metrics, consent/QoS, idle, reclaim recovery, idle retire |
+| Integration | Master + campus worker + job completion |
+| Kernels | OpenMP binary self-consistency |
+
+---
+
+## References
+
+Indicative sources from the project brief (expand to full bibliography as required by your venue):
+
+- Anderson, D. P. — BOINC / public-resource computing
+- Litzkow, Livny, Mutka — Condor / HTCondor idle-workstation harvesting
+- Rabenseifner, Hager, Jost — Hybrid MPI/OpenMP on multicore SMP nodes
+- Application-level checkpointing for hybrid codes (e.g. Losada et al.)
+- Campus reclaim-oriented sharing literature; cloud-burst / hybrid HPC–cloud surveys
+- Desktop-grid institutional work (e.g. SZTAKI Desktop Grid)
+
+Project ethics & consent drafts: [`docs/ethics.md`](docs/ethics.md), [`consent/consent_form.md`](consent/consent_form.md)
+
+---
+
+## Tech Stack
+
+### Worker / execution
+
+- **C++17 + OpenMP** — `kernels/omp_kernels.cpp` scientific kernels
+- **Python 3.10+ worker agent** — consent, QoS, TCP client, kernel runner (`python -m worker`)
+
+### Master / orchestration
+
+- **Python asyncio TCP server** — scheduler, reclaim, burst, metrics (`python -m master`)
+- **PyYAML** — `config/default.yaml`
+- **Flask** — optional dashboard
+- **boto3** — optional S3-compatible object store
+
+### Platform & ops
+
+- **Newline-delimited JSON over TCP** — control + data plane
+- **Docker** — cloud worker image (`docker/Dockerfile`)
+- **AWS CLI stubs** — `scripts/aws_launch_worker.*` (operator fills AMI/SG/subnet)
+- **pytest** — unit + integration verification
+- **PowerShell / bash** — build, demo, experiment runners
+
+### Repository map
 
 | Path | Role |
 |------|------|
-| [`docs/architecture.md`](docs/architecture.md) | Full system design (read this) |
-| `kernels/` | OpenMP `heat2d` · `batch` · `irregular` |
-| `master/` | Coordinator, scheduler, burst, metrics, storage, client |
-| `worker/` | Consent, QoS, stdin controls, kernel runner |
-| `protocol/` | JSON/TCP messages |
-| `config/` | Thresholds, ports, workloads, burst mode |
-| `dashboard/` | Optional status UI |
-| `docker/` | Cloud worker image |
-| `scripts/` | Build, demo, experiments, AWS launch |
-| `tests/` | Unit + integration |
-| `consent/` · `docs/` | Ethics, user guide, requirements, coverage |
+| [`docs/architecture.md`](docs/architecture.md) | Full architecture narrative |
+| `kernels/` | OpenMP kernels |
+| `master/` | Coordinator stack |
+| `worker/` | Campus/cloud agent |
+| `protocol/` | Wire messages |
+| `config/` | Thresholds & workloads |
+| `scripts/` | Single-run + AWS |
+| `tests/` | Automated checks |
 
 ---
 
-## Ops cheat sheet
+## Contributing
 
-| Topic | Values |
-|-------|--------|
-| Policies | `campus_only` · `hybrid` · `cloud_only` |
-| Burst triggers | Peer shortage · reclaim storm · deadline risk · force |
-| Owner keys | `p` pause · `r` resume · `l` leave · `s` status |
-| Metrics | Speedup, efficiency, reclaim recovery, cloud cost proxy, leave latency |
+Course/lab contributions welcome: keep OpenMP kernels deterministic where claimed, preserve consent-before-work, and extend experiments with CSV/JSON traces under `data/logs`.
 
-More operations: [`docs/user_guide.md`](docs/user_guide.md)
+## Authors
+
+See the repository contributors graph for participants on this codebase.
+
+## License
+
+Use according to your course / institutional submission rules unless a `LICENSE` file is added to this repository.
