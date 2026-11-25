@@ -21,6 +21,8 @@ from protocol.messages import MessageType, decode, encode, make
 from worker.consent import prompt_consent
 from worker.qos import (
     apply_below_normal_priority,
+    apply_memory_cap_mb,
+    detect_gpu_count,
     effective_threads,
     set_omp_threads,
     system_is_idle,
@@ -136,6 +138,11 @@ class WorkerAgent:
         self.writer: Optional[asyncio.StreamWriter] = None
         self.cores = cpu_count()
         self.cpu_cap = int(args.cpu_cap or 0)
+        self.ram_cap_mb = int(getattr(args, "ram_cap_mb", 0) or 0)
+        self.gpu_count = int(getattr(args, "gpus", -1))
+        if self.gpu_count < 0:
+            self.gpu_count = detect_gpu_count()
+        self.max_tasks = int(getattr(args, "max_tasks", 0) or 0)
         self.idle_only = bool(args.idle_only)
         self._inbox: asyncio.Queue = asyncio.Queue()
         self._replies: asyncio.Queue = asyncio.Queue()
@@ -158,6 +165,25 @@ class WorkerAgent:
 
         if self.args.below_normal_priority:
             apply_below_normal_priority()
+        if self.ram_cap_mb > 0:
+            if apply_memory_cap_mb(self.ram_cap_mb):
+                print(f"[qos] RAM cap applied: {self.ram_cap_mb} MiB", flush=True)
+            else:
+                print(f"[qos] RAM cap advertised: {self.ram_cap_mb} MiB (soft)", flush=True)
+        threads = effective_threads(self.cores, self.cpu_cap)
+        set_omp_threads(threads)
+        print(
+            f"[qos] donate cpu={threads}/{self.cores} threads  "
+            f"ram={self.ram_cap_mb or memory_mb()} MiB  "
+            f"gpus={self.gpu_count} (inventory only)  "
+            f"max_tasks={self.max_tasks or threads}",
+            flush=True,
+        )
+        if self.gpu_count:
+            print(
+                "[qos] Note: current kernels are CPU/OpenMP — GPUs are recorded but not scheduled yet.",
+                flush=True,
+            )
 
         host, port_s = self.args.master.split(":")
         port = int(port_s)
@@ -171,6 +197,9 @@ class WorkerAgent:
             kind=self.args.kind,
             cores=self.cores,
             memory_mb=memory_mb(),
+            memory_cap_mb=self.ram_cap_mb,
+            gpu_count=self.gpu_count,
+            max_tasks=self.max_tasks,
             os=platform.platform(),
             consented=consented,
             cpu_cap_threads=self.cpu_cap,
@@ -334,8 +363,11 @@ class WorkerAgent:
             elif cmd in {"s", "status"}:
                 print(
                     f"[status] id={self.worker_id} paused={self.paused} "
-                    f"task={self.current_task or '-'} cores={self.cores} "
-                    f"cpu_cap={self.cpu_cap or 'all'} idle_only={self.idle_only}",
+                    f"task={self.current_task or '-'} "
+                    f"cpu={self.cpu_cap or self.cores}/{self.cores} "
+                    f"ram_cap={self.ram_cap_mb or 'full'}MB "
+                    f"gpus={self.gpu_count} max_tasks={self.max_tasks or 'auto'} "
+                    f"idle_only={self.idle_only}",
                     flush=True,
                 )
             elif cmd:
@@ -395,8 +427,8 @@ class WorkerAgent:
         kernel = msg["kernel"]
         params = dict(msg.get("params") or {})
         threads = effective_threads(self.cores, self.cpu_cap)
-        if "threads" not in params or not params["threads"]:
-            params["threads"] = threads
+        requested_threads = int(params.get("threads") or 0)
+        params["threads"] = max(1, min(requested_threads or threads, threads))
         self.current_task = tid
         print(f"[worker] start task {tid} kernel={kernel}", flush=True)
 
@@ -473,7 +505,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--worker-id", default=None)
     p.add_argument("--name", default="worker")
     p.add_argument("--auto-consent", action="store_true")
-    p.add_argument("--cpu-cap", type=int, default=0)
+    p.add_argument("--cpu-cap", type=int, default=0, help="Max OpenMP threads to donate (0=all)")
+    p.add_argument("--ram-cap-mb", type=int, default=0, help="RAM budget MiB (0=full machine)")
+    p.add_argument("--gpus", type=int, default=-1, help="GPU count to advertise (-1=auto-detect)")
+    p.add_argument("--max-tasks", type=int, default=0, help="Max concurrent tasks (0=use CPU cap)")
+    p.add_argument("--profile", default=None, help="YAML resource profile path")
     p.add_argument("--idle-only", action="store_true")
     p.add_argument("--below-normal-priority", action="store_true", default=True)
     p.add_argument("--no-below-normal-priority", action="store_false", dest="below_normal_priority")
@@ -490,8 +526,38 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _apply_profile(args: argparse.Namespace) -> argparse.Namespace:
+    path = args.profile
+    if not path:
+        default = ROOT / "config" / "worker_local.yaml"
+        if default.exists():
+            path = str(default)
+    if not path:
+        return args
+    try:
+        import yaml
+        data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        print(f"[qos] could not load profile {path}: {exc}")
+        return args
+    if args.cpu_cap == 0 and "cpu_cap" in data:
+        args.cpu_cap = int(data.get("cpu_cap") or 0)
+    if getattr(args, "ram_cap_mb", 0) == 0 and "ram_cap_mb" in data:
+        args.ram_cap_mb = int(data.get("ram_cap_mb") or 0)
+    if getattr(args, "gpus", -1) < 0 and "gpus" in data:
+        args.gpus = int(data.get("gpus") if data.get("gpus") is not None else -1)
+    if getattr(args, "max_tasks", 0) == 0 and "max_tasks" in data:
+        args.max_tasks = int(data.get("max_tasks") or 0)
+    if not args.idle_only and data.get("idle_only"):
+        args.idle_only = True
+    if data.get("below_normal_priority") is False:
+        args.below_normal_priority = False
+    print(f"[qos] loaded profile {path}", flush=True)
+    return args
+
+
 def main() -> None:
-    args = build_parser().parse_args()
+    args = _apply_profile(build_parser().parse_args())
     asyncio.run(WorkerAgent(args).run())
 
 

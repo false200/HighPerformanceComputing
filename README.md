@@ -221,6 +221,8 @@ Put the same repo folder on every laptop (clone or USB copy). Same Wi‑Fi.
 
 Worker hotkeys after connect: `p` pause · `r` resume · `l` leave · `s` status.
 
+**Resource donation:** `Connect.bat` asks how many **CPU threads**, how much **RAM (MiB)**, and **max parallel tasks** to share (saved in `config/worker_local.yaml`). **GPUs** can be advertised for inventory, but current kernels are **CPU/OpenMP only** (not scheduled on GPU yet).
+
 First time on each PC you need Python 3 + a `g++` with OpenMP (MSYS2 MinGW64 on Windows). After that, Host/Connect handle the rest.
 
 ### One-shot local demo (single PC)

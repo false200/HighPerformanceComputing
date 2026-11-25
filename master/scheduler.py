@@ -38,6 +38,9 @@ class WorkerInfo:
     memory_mb: int
     os_name: str
     cpu_cap_threads: int = 0
+    memory_cap_mb: int = 0  # 0 = use memory_mb as-is
+    gpu_count: int = 0  # inventory only; kernels are CPU/OpenMP today
+    max_tasks: int = 0  # 0 = derive from effective cores
     idle_only: bool = False
     paused: bool = False
     consented: bool = False
@@ -147,6 +150,16 @@ class Scheduler:
             return min(w.cores, w.cpu_cap_threads)
         return max(1, w.cores)
 
+    def _max_concurrent(self, w: WorkerInfo) -> int:
+        if w.max_tasks and w.max_tasks > 0:
+            return max(1, w.max_tasks)
+        return max(1, self._effective_cores(w))
+
+    def effective_memory_mb(self, w: WorkerInfo) -> int:
+        if w.memory_cap_mb and w.memory_cap_mb > 0:
+            return min(w.memory_mb, w.memory_cap_mb)
+        return max(0, w.memory_mb)
+
     def assign_next(
         self,
         peer_first: bool = True,
@@ -175,7 +188,7 @@ class Scheduler:
         for w in pool:
             if not self.pending:
                 break
-            if self._load(w) >= max(1, self._effective_cores(w)):
+            if self._load(w) >= self._max_concurrent(w):
                 continue
             tid = self.pending.pop(0)
             task = self.task_index[tid]
@@ -191,11 +204,23 @@ class Scheduler:
         return assignments
 
     def complete_task(
-        self, task_id: str, result: Dict[str, Any]
+        self,
+        task_id: str,
+        result: Dict[str, Any],
+        worker_id: Optional[str] = None,
     ) -> Tuple[Optional[Job], Optional[float]]:
-        """Returns (job, reclaim_recovery_sec if this task was previously reclaimed)."""
+        """Returns (job, reclaim_recovery_sec if this task was previously reclaimed).
+
+        Rejects unknown tasks, unassigned tasks, and stale results whose worker_id
+        does not match the current assignee.
+        """
         task = self.task_index.get(task_id)
         if not task:
+            return None, None
+        current = self.assigned.get(task_id)
+        if current is None:
+            return None, None
+        if worker_id is not None and worker_id != current:
             return None, None
         recovery: Optional[float] = None
         if task.reclaimed_at is not None:

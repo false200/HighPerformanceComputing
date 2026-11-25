@@ -203,6 +203,9 @@ class MasterServer:
             memory_mb=int(msg.get("memory_mb", 1024)),
             os_name=str(msg.get("os", "unknown")),
             cpu_cap_threads=int(msg.get("cpu_cap_threads", 0)),
+            memory_cap_mb=int(msg.get("memory_cap_mb", 0) or 0),
+            gpu_count=int(msg.get("gpu_count", 0) or 0),
+            max_tasks=int(msg.get("max_tasks", 0) or 0),
             idle_only=bool(msg.get("idle_only", False)),
             consented=bool(msg.get("consented", False)),
             instance_type=msg.get("instance_type"),
@@ -212,17 +215,36 @@ class MasterServer:
         if info.kind == "cloud":
             info.consented = True  # system-launched
         self.scheduler.register_worker(info)
-        print(f"[master] registered {info.kind} worker {wid} cores={info.cores}", flush=True)
-        return make(MessageType.REGISTER_ACK, worker_id=wid, ok=True, consented=info.consented)
+        eff = self.scheduler._effective_cores(info)
+        mem = self.scheduler.effective_memory_mb(info)
+        print(
+            f"[master] registered {info.kind} worker {wid} "
+            f"cpu={eff}/{info.cores} ram={mem}MB gpus={info.gpu_count} "
+            f"max_tasks={self.scheduler._max_concurrent(info)}",
+            flush=True,
+        )
+        return make(
+            MessageType.REGISTER_ACK,
+            worker_id=wid,
+            ok=True,
+            consented=info.consented,
+            effective_threads=eff,
+            effective_memory_mb=mem,
+            gpu_count=info.gpu_count,
+            max_tasks=self.scheduler._max_concurrent(info),
+        )
 
     def _on_result(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         tid = msg["task_id"]
         result = msg.get("result", {})
-        job, recovery = self.scheduler.complete_task(tid, result)
+        worker_id = msg.get("worker_id")
+        job, recovery = self.scheduler.complete_task(tid, result, worker_id=worker_id)
+        if job is None:
+            return make(MessageType.ERROR, error="stale or unknown task result", task_id=tid)
         if recovery is not None and self.active_job_id and self.active_job_id in self._job_metrics:
             self._job_metrics[self.active_job_id].reclaim_recovery_sec += recovery
         uri = self.store.put_json("results", tid, {"task_id": tid, "result": result})
-        if job and job.finished_at:
+        if job.finished_at:
             self._finalize_job(job)
         return make(MessageType.TASK_RESULT, ok=True, stored=uri)
 
@@ -289,20 +311,13 @@ class MasterServer:
         if not m:
             return
         m.wall_time_sec = (job.finished_at or time.time()) - job.created_at
-        # Prefer measured sequential proxy = sum of per-task OpenMP wall times
-        measured = 0.0
-        for t in job.tasks:
-            if t.result and "elapsed_ms" in t.result:
-                measured += float(t.result["elapsed_ms"]) / 1000.0
-        if measured > 0:
-            m.serial_proxy_sec = measured
         m.campus_workers = max(
             m.campus_workers,
             sum(1 for w in self.scheduler.workers.values() if w.kind == "campus"),
         )
         # peak cloud launches during job
         m.cloud_workers = max(m.cloud_workers, self.burst.launches)
-        m.cloud_vm_seconds = self.burst.vm_seconds
+        m.cloud_vm_seconds = self.burst.snapshot_vm_seconds(job.finished_at or time.time())
         m.reclaim_events = max(m.reclaim_events, self.scheduler.reclaim_events)
         if self._leave_latencies:
             m.leave_latency_ms = sum(self._leave_latencies) / len(self._leave_latencies)
@@ -322,6 +337,11 @@ class MasterServer:
                 "worker_id": w.worker_id,
                 "kind": w.kind,
                 "cores": w.cores,
+                "effective_threads": self.scheduler._effective_cores(w),
+                "memory_mb": w.memory_mb,
+                "effective_memory_mb": self.scheduler.effective_memory_mb(w),
+                "gpu_count": w.gpu_count,
+                "max_tasks": self.scheduler._max_concurrent(w),
                 "consented": w.consented,
                 "paused": w.paused,
                 "tasks_done": w.tasks_done,

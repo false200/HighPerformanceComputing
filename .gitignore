@@ -19,3 +19,6 @@ venv/
 pdf_extract.txt
 .pdf_extract.txt
 qa/
+
+# Per-laptop donation prefs (written by Connect.bat)
+config/worker_local.yaml

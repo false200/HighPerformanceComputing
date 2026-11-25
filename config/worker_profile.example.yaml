@@ -1,0 +1,20 @@
+# Copy to worker_local.yaml (auto-written by Connect.bat) or pass --profile.
+# These limit what THIS laptop donates to the grid.
+
+# Max OpenMP threads to use (0 = all logical cores)
+cpu_cap: 4
+
+# Soft RAM budget advertised to the master, in MiB (0 = report full machine RAM)
+ram_cap_mb: 4096
+
+# Max tasks this worker will run at once (1 is safest for a work laptop)
+max_tasks: 1
+
+# GPU count to advertise (current scientific kernels are CPU/OpenMP only — not used yet)
+gpus: 0
+
+# Only accept work when the machine looks idle
+idle_only: false
+
+# Prefer not disturbing interactive apps
+below_normal_priority: true

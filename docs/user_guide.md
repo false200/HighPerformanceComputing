@@ -34,13 +34,17 @@ py -3 -m master.client --kernel heat2d --policy hybrid --chunks 8
 ## Campus consent
 Workers print a plain-language consent screen. Work starts only after `YES` (or `--auto-consent` for automation/tests).
 
-## Owner controls
+## Owner controls & resource caps
 - Interactive keys (TTY): `p` pause, `r` resume, `l` leave, `s` status
-- `--cpu-cap N` — OpenMP thread cap
-- `--idle-only` — wait for low CPU busy ratio before running (override with `HPC_FORCE_BUSY` / `HPC_FORCE_IDLE`)
-- below-normal process priority (default on)
-- leave via key `l`, `--demo-leave-after`, or LEAVE message
-- Automation: pass `--no-controls` so stdin hotkeys stay off
+- `Connect.bat` prompts (or CLI flags):
+  - `--cpu-cap N` — max OpenMP threads to donate
+  - `--ram-cap-mb N` — RAM budget (advertised; Windows Job Object when possible)
+  - `--max-tasks N` — max concurrent tasks (use `1` on a work laptop)
+  - `--gpus N` — inventory only (kernels are CPU/OpenMP today)
+  - `--idle-only` — wait for low CPU busy ratio (`HPC_FORCE_BUSY` / `HPC_FORCE_IDLE` for tests)
+- Profile example: `config/worker_profile.example.yaml` → saved as `config/worker_local.yaml`
+- Below-normal process priority (default on)
+- Automation: `--no-controls` / Connect `-SkipResourcePrompt`
 
 ## Policies
 - `campus_only` — no cloud overflow
