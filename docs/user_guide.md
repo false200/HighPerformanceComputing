@@ -5,7 +5,16 @@
 - Python 3.10+
 - Optional: Docker, AWS CLI (for real cloud burst)
 
-## One-command local run
+## Multi-laptop (recommended for users)
+
+1. Same repo on every laptop; same Wi‑Fi.
+2. **Host laptop:** double-click `Host.bat` (run as Administrator once if firewall blocks). Note the printed IP.
+3. **Other laptops:** double-click `Connect.bat`, type that IP, accept consent (`YES`).
+4. **Host:** double-click `SubmitJob.bat` in a second window.
+
+Scripts: `scripts/host.ps1`, `scripts/connect.ps1`, `scripts/submit_job.ps1`.
+
+## One-command local run (single PC)
 ```powershell
 .\scripts\run_all.ps1
 ```

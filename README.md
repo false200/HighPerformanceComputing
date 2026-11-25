@@ -209,37 +209,24 @@ Idle cloud workers shut down after timeout. Modes: **`local_sim`** (same process
 
 ## Running
 
-### One-shot (recommended)
+### Multi-laptop classroom (easiest)
+
+Put the same repo folder on every laptop (clone or USB copy). Same Wi‑Fi.
+
+| Role | Double-click |
+|------|----------------|
+| **Your host laptop** | [`Host.bat`](Host.bat) — builds deps, opens port 9100, starts master, **prints the IP** |
+| **Other laptops** | [`Connect.bat`](Connect.bat) — asks for that IP, joins the pool |
+| **Host (2nd window)** | [`SubmitJob.bat`](SubmitJob.bat) — runs a campus job once workers are registered |
+
+Worker hotkeys after connect: `p` pause · `r` resume · `l` leave · `s` status.
+
+First time on each PC you need Python 3 + a `g++` with OpenMP (MSYS2 MinGW64 on Windows). After that, Host/Connect handle the rest.
+
+### One-shot local demo (single PC)
 
 ```powershell
 .\scripts\run_all.ps1
-```
-
-Build OpenMP kernels → install Python deps → pytest → hybrid demo → experiment scenarios → metrics table.
-
-### Development
-
-```powershell
-.\scripts\build_kernels.ps1
-py -3 -m pip install -r requirements.txt
-$env:PYTHONPATH = (Get-Location)
-
-# terminal 1
-py -3 -m master
-
-# terminal 2..N  (campus peers)
-py -3 -m worker --master 127.0.0.1:9100 --auto-consent
-
-# submit
-py -3 -m master.client --kernel heat2d --policy hybrid --chunks 8
-```
-
-Owner hotkeys on a TTY worker: `p` pause · `r` resume · `l` leave · `s` status. Automation should pass `--no-controls`.
-
-Optional dashboard:
-
-```powershell
-py -3 dashboard\app.py --port 8080
 ```
 
 ### Policies
@@ -263,8 +250,6 @@ py -3 dashboard\app.py --port 8080
 ```powershell
 .\scripts\run_experiments.ps1
 ```
-
-Scenarios include campus-only heat/batch/irregular, mid-job reclaim, hybrid force-burst, and cloud-only batch. Artifacts: `data/logs/metrics.csv`, `experiments/out/`.
 
 More ops detail: [`docs/user_guide.md`](docs/user_guide.md)
 
