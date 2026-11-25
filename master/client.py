@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from protocol.messages import MessageType, decode, encode, make
+
+
+async def rpc(host: str, port: int, msg: Dict[str, Any], timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        writer.write(encode(msg))
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+        return decode(line)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def submit_and_wait(args: argparse.Namespace) -> int:
+    host, port_s = args.master.split(":")
+    port = int(port_s)
+    sub = await rpc(host, port, make(
+        MessageType.JOB_SUBMIT,
+        kernel=args.kernel,
+        policy=args.policy,
+        chunks=args.chunks,
+        deadline_sec=args.deadline,
+    ))
+    if not sub or not sub.get("ok"):
+        print("submit failed:", sub)
+        return 1
+    job_id = sub["job_id"]
+    print(f"submitted job {job_id} tasks={sub.get('tasks')}")
+    if args.force_burst:
+        await rpc(host, port, make(MessageType.FORCE_BURST, enabled=True))
+        print("force-burst enabled")
+
+    t0 = time.time()
+    while time.time() - t0 < args.timeout:
+        st = await rpc(host, port, make(MessageType.JOB_STATUS, job_id=job_id))
+        if not st:
+            await asyncio.sleep(0.5)
+            continue
+        print(f"progress {st.get('done')}/{st.get('total')}", flush=True)
+        if st.get("finished"):
+            print(json.dumps(st, indent=2))
+            return 0
+        await asyncio.sleep(0.5)
+    print("timeout waiting for job")
+    return 2
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--master", default="127.0.0.1:9100")
+    p.add_argument("--kernel", default="heat2d", choices=["heat2d", "batch", "irregular"])
+    p.add_argument("--policy", default="hybrid", choices=["hybrid", "campus_only", "cloud_only"])
+    p.add_argument("--chunks", type=int, default=8)
+    p.add_argument("--deadline", type=float, default=120.0)
+    p.add_argument("--timeout", type=float, default=180.0)
+    p.add_argument("--force-burst", action="store_true")
+    args = p.parse_args()
+    raise SystemExit(asyncio.run(submit_and_wait(args)))
+
+
+if __name__ == "__main__":
+    main()

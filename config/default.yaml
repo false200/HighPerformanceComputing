@@ -1,0 +1,51 @@
+master:
+  host: "0.0.0.0"
+  port: 9100
+  dashboard_port: 8080
+
+scheduling:
+  peer_first: true
+  heartbeat_interval_sec: 2.0
+  heartbeat_timeout_sec: 6.0
+  min_campus_peers: 1
+  reclaim_rate_threshold: 0.3
+  max_cloud_vms: 2
+  cloud_idle_timeout_sec: 15.0
+  default_deadline_sec: 120.0
+
+owner_qos:
+  default_cpu_cap_threads: 0   # 0 = use all reported cores
+  idle_only: false
+  below_normal_priority: true
+
+storage:
+  backend: "local"             # local | s3
+  local_root: "data"
+  s3_bucket: "hpc-grid-checkpoints"
+  s3_prefix: "runs/"
+  s3_endpoint_url: null        # set for MinIO / compatible
+
+burst:
+  mode: "local_sim"            # local_sim | aws
+  aws_ami: "ami-PLACEHOLDER"
+  aws_instance_type: "t3.micro"
+  aws_region: "us-east-1"
+  aws_security_group: "sg-PLACEHOLDER"
+  aws_subnet: "subnet-PLACEHOLDER"
+  worker_image: "hpc-grid-worker:latest"
+
+workloads:
+  heat2d:
+    grid: 128
+    steps: 40
+    tiles: 16
+  batch:
+    arrays: 32
+    length: 100000
+  irregular:
+    tasks: 24
+    max_work: 50000
+
+logging:
+  dir: "data/logs"
+  metrics_csv: "data/logs/metrics.csv"

@@ -1,0 +1,17 @@
+bin/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/logs/*
+data/checkpoints/*
+data/results/*
+!data/logs/.gitkeep
+!data/checkpoints/.gitkeep
+!data/results/.gitkeep
+experiments/out/*
+!experiments/out/.gitkeep
+.pdf_extract.txt
+pdf_extract.txt
+.venv/
+venv/
+*.exe

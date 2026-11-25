@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+import json
+from enum import Enum
+from typing import Any, Dict, Optional
+
+
+class MessageType(str, Enum):
+    REGISTER = "REGISTER"
+    REGISTER_ACK = "REGISTER_ACK"
+    HEARTBEAT = "HEARTBEAT"
+    TASK_ASSIGN = "TASK_ASSIGN"
+    TASK_RESULT = "TASK_RESULT"
+    TASK_CHECKPOINT = "TASK_CHECKPOINT"
+    LEAVE = "LEAVE"
+    PAUSE = "PAUSE"
+    RESUME = "RESUME"
+    JOB_SUBMIT = "JOB_SUBMIT"
+    JOB_STATUS = "JOB_STATUS"
+    FORCE_BURST = "FORCE_BURST"
+    METRICS = "METRICS"
+    ERROR = "ERROR"
+    SHUTDOWN = "SHUTDOWN"
+
+
+def make(msg_type: MessageType | str, **payload: Any) -> Dict[str, Any]:
+    # Prefer .value — str(Enum) can yield "MessageType.X" on some Python versions.
+    type_str = msg_type.value if isinstance(msg_type, MessageType) else str(msg_type)
+    return {"type": type_str, **payload}
+
+
+def encode(msg: Dict[str, Any]) -> bytes:
+    return (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def decode(line: bytes | str) -> Optional[Dict[str, Any]]:
+    if isinstance(line, bytes):
+        line = line.decode("utf-8", errors="replace")
+    line = line.strip()
+    if not line:
+        return None
+    return json.loads(line)
