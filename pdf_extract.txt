@@ -1,0 +1,374 @@
+
+===== PAGE 1 =====
+1. Title
+Hybrid Consent-Driven Desktop Grid with Cloud-Burst Overflow for Interrupt-Tolerant
+Scientific Computing on Campus Workstations
+2. Abstract
+University computer laboratories and student laptops contain a large amount of unused CPU
+capacity during free periods, nights, and short idle intervals between classes. At the same time,
+many academic departments cannot afford dedicated HPC clusters for routine scientific and
+engineering workloads. Existing volunteer computing platforms and campus batch systems prove
+that idle machines can be pooled, yet they usually assume either long-running donation on the
+public internet or administratively controlled laboratory PCs. They give limited attention to a
+common classroom situation: a participant may withdraw the machine at any moment, and the
+owner’s interactive work must not be harmed. Pure public-cloud execution can meet deadlines,
+but continuous use is expensive for student and departmental budgets.
+This project proposes a hybrid consent-driven desktop grid. Participating campus
+workstations run an explicit opt-in worker. Inside every worker, shared-memory parallelism
+(OpenMP) uses local cores for assigned task chunks. Across machines, a master node
+decomposes one scientific job, distributes chunks, and merges results. The scheduler prefers
+consented campus peers. When peer capacity is insufficient, reclaim events spike, or a deadline is
+at risk, the master triggers cloud-burst overflow: short-lived cloud virtual machines run the same
+worker image, pull tasks from the shared queue, store checkpoints in cloud object storage if
+configured, and shut down when idle. Owner-quality constraints on campus workers (CPU caps,
+lower process priority, idle-only mode, one-click leave) remain first-class requirements.
+The expected outcome is a working hybrid prototype, a classroom or laboratory deployment
+study with optional free-tier cloud burst, and quantitative comparison of campus-only, cloud-
+only, and hybrid policies. The work connects HPC-style parallel execution with practical cloud
+elasticity without requiring the team to own a data centre.
+
+===== PAGE 2 =====
+3. Introduction and Motivation
+High performance computing is no longer limited to national laboratories. Course projects in
+numerical methods, image processing, simulation, and large batch experiments also need parallel
+speedup. Buying and maintaining a private cluster is costly for many colleges. Cloud instances
+help, but continuous use quickly becomes expensive for student budgets.
+A practical observation motivates the campus side of this work. In a typical computer lab or
+classroom, dozens of machines remain underused for long stretches. If those machines could
+safely cooperate on one job—only after informed consent—the department would gain a
+temporary compute pool without capital expenditure. Early Beowulf clusters were built on
+similar thinking: commodity PCs plus a network. Desktop grids and volunteer computing later
+scaled the idea to campuses and to the public internet.
+Campus-only pools, however, are volatile. Students leave. Wi-Fi drops. Class periods end. A
+job that must finish before a deadline can stall when too many peers reclaim at once. Industry
+hybrid HPC–cloud practice already uses on-premises or edge capacity first and bursts to the
+cloud when local resources are short. Applying that pattern to a consent-driven student desktop
+grid is a natural and under-explored academic design point.
+The difficulty is therefore twofold: volatility and trust on campus workers, and disciplined,
+low-cost cloud overflow that activates only when policy requires it. This project addresses both
+by combining local OpenMP parallelism, reclaim-aware task redistribution, and on-demand
+cloud-burst workers that join the same task fabric.
+4. Problem Statement
+Design and implement a hybrid desktop-grid framework that can:
+1. Obtain explicit consent from workstation owners before any remote work begins.
+2. Aggregate heterogeneous classroom or campus CPUs into a temporary peer pool.
+3. Execute a single scientific workload by distributing tasks to workers, each using OpenMP on
+local cores.
+4. Survive sudden participant departure (reclaim) through checkpointing or task reassignment.
+5. Limit interference with the owner’s normal use of the campus machine.
+6. Burst to short-lived cloud workers when peer capacity, reclaim rate, or deadline risk crosses
+configured thresholds.
+
+===== PAGE 3 =====
+7. Optionally persist checkpoints and final artifacts in cloud object storage.
+8. Report speedup, efficiency, recovery time, cloud cost proxy, and owner-impact metrics for
+evaluation and publication.
+5. Objectives
+5.1 Primary Objectives
+ Build a master–worker desktop grid suitable for LAN or controlled classroom networks.
+ Provide a portable campus worker application with consent screen, status display, pause, and
+leave controls.
+ Parallelise representative scientific kernels using OpenMP inside each worker.
+ Implement reclaim-aware scheduling so unfinished chunks are not permanently lost when a
+campus node exits.
+ Integrate a cloud-burst overflow path that launches and retires worker VMs under explicit
+policy.
+ Evaluate campus-only, cloud-assisted, and hybrid runs for a journal-style report.
+5.2 Secondary Objectives
+ Support heterogeneous CPU counts through capability-aware chunk sizing.
+ Offer idle-only and CPU-cap policies for owner protection.
+ Store selected checkpoints/results in cloud object storage (S3-compatible or provider SDK).
+ Produce a reproducible experiment package (scripts, logs, plots), including free-tier burst
+demos.
+5.3 Out of Scope (Current Phase)
+ Replacing hyperscale cloud providers for general-purpose always-on hosting.
+ Running untrusted third-party binaries without sandboxing in a commercial marketplace.
+ Full MPI tightly coupled communication across unstable student Wi-Fi as the default mode
+(optional later extension on stable lab desktops).
+ Large multi-region GPU clusters or production SLA guarantees.
+6. Research Gaps
+A literature review shows that idle-machine pooling and cloud bursting are each established, but
+several gaps remain at their intersection for classroom-scale systems:
+Gap A — Reclaim as a normal event on campus peers. Cluster managers such as Slurm and
+Kubernetes treat node loss as failure. Volunteer platforms tolerate churn for coarse independent
+
+===== PAGE 4 =====
+tasks. Recent campus GPU-sharing work stresses owner autonomy and reclaim. CPU classroom
+workers with rapid leave-and-reassign semantics, tied to cloud overflow, are less completely
+treated as one system.
+Gap B — Owner QoS as a scheduling constraint. Many grids maximise throughput. Student
+owners care about browser and IDE responsiveness. Measuring and enforcing soft caps, priority
+limits, and leave latency is rarely the centre of academic desktop-grid evaluations.
+Gap C — Hybrid local parallelism on volatile nodes. BOINC-style units are often process-
+centric. Hybrid MPI+OpenMP is mature on stable clusters. Fewer student-facing systems
+combine cross-node task distribution with explicit OpenMP inside each volunteer worker under
+high churn.
+Gap D — Policy-driven cloud burst for consent-based peer grids. Cloud burst and hybrid
+HPC–cloud schedulers exist for institutional clusters. Peer marketplaces rent third-party
+machines. A lightweight academic system that prefers consented campus workers and bursts to
+cloud VMs only under peer shortage, reclaim spikes, or deadline risk—while keeping the same
+worker image and task queue—is a sharper, less saturated claim.
+Gap E — Lightweight deployment versus heavy middleware. HTCondor and full grid stacks
+are powerful but heavy for a course-lab pilot. There is room for a minimal consent-first hybrid
+stack that still reports HPC- and cloud-relevant metrics.
+This project addresses Gaps A–D in an integrated prototype and uses Gap E as a design
+principle.
+7. Literature Survey
+7.1 Volunteer Computing and Desktop Grids
+Anderson’s BOINC platform demonstrated that volunteered PCs can support large scientific
+campaigns through a client–server work-unit model. Folding@home showed domain-specific
+volunteer compute for molecular simulation. These systems validate public opt-in computing.
+Their default assumption is often wide-area participation and relatively coarse tasks, which
+differs from a short, supervised classroom session on a local network.
+
+===== PAGE 5 =====
+Institutional desktop grids (for example Condor/HTCondor deployments and earlier
+academic systems such as SZTAKI Desktop Grid) showed that universities can harvest idle
+laboratory machines. Hierarchical and enterprise desktop-grid designs explored connecting local
+pools and, in some cases, allowing MPI programs on subordinate clusters. Those efforts
+strengthen the campus motivation for this project, while typically relying on stronger
+administrative control than a consent popup on a student’s personal laptop.
+7.2 Campus Resource Sharing and Reclaim
+Recent campus systems for GPU sharing argue that providers must remain autonomous: an
+owner can reclaim hardware without prior negotiation. Related networking and migration work
+studies how to move stateful work when reclaim happens. Those papers mainly target GPUs and
+AI training. The present project borrows the reclaim-first mindset and applies it to CPU scientific
+workers in classrooms, with owner-facing controls and OpenMP task chunks, then links reclaim
+pressure to cloud overflow.
+7.3 Hybrid Parallel Programming
+Rabenseifner, Hager, and others have explained why hybrid MPI+OpenMP fits multicore
+cluster nodes: MPI across nodes, OpenMP inside shared memory. Application-level
+checkpointing research for hybrid MPI–OpenMP codes shows that consistency and restart across
+heterogeneous restarts are non-trivial. For volatile classroom pools, this project adopts a
+pragmatic split: OpenMP inside the worker for local speedup; distributed task queue across
+workers for churn tolerance. Tightly coupled MPI across student laptops remains an optional
+stable-lab extension.
+7.4 Cloud Burst, Hybrid HPC–Cloud, and Peer Marketplaces
+Cloud bursting and hybrid cloud HPC allow local capacity to overflow to public clouds
+under load or deadline pressure. Elastic MPI and spot-oriented HPC toolkits study cost and fault
+tolerance on unreliable cloud nodes. Commercial and decentralised marketplaces (for example
+Vast.ai, Akash, and related peer GPU networks) rent third-party capacity; empirical studies note
+that raw capacity can look abundant while predictability stays poor. That observation supports a
+careful academic stance: peer and burst capacity suit interrupt-tolerant batch science, not drop-in
+replacement of AWS for all services.
+
+===== PAGE 6 =====
+7.5 Summary of Survey
+Prior work proves feasibility of idle harvesting, hybrid parallelism, and cloud overflow
+separately. The combined classroom setting—explicit consent, owner QoS, OpenMP workers,
+reclaim-aware reassignment, policy-driven cloud-burst overflow, heterogeneous student devices,
+and HPC-style measurement—remains a coherent open niche for an undergraduate systems
+project with journal potential.
+8. Proposed System Overview
+The system has four visible parts:
+9. Master / Coordinator — accepts a job, splits it into tasks, tracks campus and cloud workers,
+merges results, records metrics, and evaluates burst policy.
+10. Campus worker application — opt-in agent on lab/student PCs; consent UI; OpenMP
+execution; reclaim controls.
+11. Cloud-burst workers — short-lived VMs (or containers) running the same worker image
+when policy triggers overflow.
+12. Cloud support services — object storage for checkpoints/results; optional hosted dashboard.
+Participation on campus is voluntary. No campus work runs before consent. Leaving the peer
+pool is always allowed. Cloud workers are system-launched under operator credentials and auto-
+retired.
+9. System Architecture
+9.1 Hybrid Logical Architecture
+Figure 1 presents the hybrid logical architecture. The operator submits a scientific job to the
+master. The peer-first scheduler places work on consented campus workers. The reclaim manager
+returns unfinished work when owners leave. The cloud-burst controller launches short-lived VMs
+that join the same shared task queue. Checkpoints and results may be stored in cloud object
+storage.
+
+===== PAGE 7 =====
+Figure 1. Hybrid logical architecture: campus peers with cloud-burst overflow.
+9.2 Layered Architecture
+Figure 2 shows four software layers, including burst control in orchestration and cloud VM
+lifecycle plus object storage in the platform layer.
+
+===== PAGE 8 =====
+
+
+===== PAGE 9 =====
+Figure 2. Layered software architecture including cloud-burst control.
+9.3 Deployment View
+Figure 3 illustrates deployment across a campus site and a public-cloud free tier. The master
+prefers lab or student PCs and bursts to cloud worker VMs when policy requires overflow. Object
+storage holds durable checkpoints.
+Figure 3. Hybrid campus + cloud deployment view.
+10. How the System Works
+Figure 4 summarises the interaction sequence among the campus owner, campus worker,
+master, shared queue, burst controller, cloud worker VM, and object storage.
+
+===== PAGE 10 =====
+Figure 4. End-to-end hybrid workflow including reclaim and cloud burst.
+Step 1 — Registration and consent (campus). The participant starts the campus worker. A
+consent screen states purpose, resources used, exclusions (no personal file access), how to stop,
+and who operates the master. Work begins only after acceptance.
+Step 2 — Capability advertisement. Campus and cloud workers report core count, memory,
+OS, and policy settings. Cloud workers additionally report instance type and region.
+Step 3 — Job submission. The operator submits one scientific job. The master partitions it into
+tasks.
+Step 4 — Peer-first scheduling. Tasks go first to idle consented campus workers. Preference
+respects capability and owner caps.
+Step 5 — Local parallel execution. OpenMP parallelises each chunk on the worker. Campus
+process priority stays below interactive apps when configured.
+Step 6 — Heartbeats and reclaim. Campus leave/pause or missed heartbeats trigger reclaim.
+Partial checkpoints upload to master and/or cloud object storage; tasks requeue.
+Step 7 — Cloud-burst overflow. If active peers are below N, reclaim rate exceeds a threshold,
+or projected finish time misses the deadline, the burst controller launches cloud worker VMs
+from a prepared image. Those workers register, pull tasks, and execute with OpenMP.
+
+===== PAGE 11 =====
+Step 8 — Aggregation, retirement, and metrics. Results merge on the master. Idle cloud
+workers shut down. Metrics include peer speedup, hybrid wall time, reclaim recovery,
+approximate cloud cost, and owner leave latency.
+10.1 Reclaim Handling Path
+Figure 5 details reclaim handling on campus workers. When heartbeats fail or the owner
+leaves, the system preserves partial state when possible and requeues remaining work for another
+peer or a cloud-burst worker.
+
+===== PAGE 12 =====
+
+
+===== PAGE 13 =====
+Figure 5. Reclaim-aware recovery flow for interrupt-tolerant execution.
+11. Cloud-Burst Policy
+Figure 6 shows the burst decision path. The system continues peer-first scheduling while
+pool health is adequate. Burst launches occur only under configured conditions and within a
+maximum VM cap. Idle cloud workers are shut down after a timeout.
+Figure 6. Policy-driven cloud-burst overflow control flow.
+Burst when any configured condition holds:
+
+===== PAGE 14 =====
+ Too few consented peers online
+ Sustained high reclaim or task retry rate
+ Deadline risk based on remaining work and recent throughput
+ Operator force-burst for controlled experiments
+Prefer campus peers when healthy. Cap maximum cloud VMs for budget control. Shut down
+burst VMs after idle timeout.
+12. Methodology
+13. Requirement analysis including consent text and cloud account constraints (free tier / student
+credits).
+14. Architecture and protocol design for tasks, heartbeats, reclaim, and burst control messages.
+15. Implementation of master, campus worker, cloud worker image, and logging.
+16. Integration tests: campus-only, then hybrid with one cloud VM.
+17. Controlled experiments with fixed problem sizes and repeated trials.
+18. Analysis of speedup, efficiency, reclaim recovery, cloud cost proxy, and owner-impact
+proxies.
+19. Documentation for report, viva, and journal manuscript.
+13. Tools and Technologies
+Component Suggested Choices
+Worker / Master core C/C++ with OpenMP; or Python orchestration with
+native OpenMP kernels
+Campus packaging Portable Windows/Linux worker binary
+Cloud worker Same image in Docker or cloud VM template
+Communication TCP / lightweight queue; master endpoint reachable
+from cloud
+Cloud provider AWS / GCP / Azure student or free tier
+Object storage S3 / GCS / Azure Blob for checkpoints and results
+Burst control Provider SDK or CLI scripts from master
+Dashboard Optional web UI (campus or small cloud host)
+Experiment logging CSV / JSON traces
+Version control Git
+14. Workloads for Evaluation
+At least two kernels should be implemented so results are not tied to one pattern:
+20. Data-parallel numerical kernel (tiled 2D heat equation or similar).
+21. Embarrassingly parallel batch kernel (independent image or array tasks).
+Optional third: a mildly irregular workload to study stragglers.
+
+===== PAGE 15 =====
+15. Experimental Plan
+Experiment Purpose
+Strong scaling on campus peers only Peer speedup and efficiency
+Heterogeneous campus mix Capability-aware vs uniform chunks
+Forced reclaim mid-job (campus) Recovery time and redundant work
+Owner policy on/off CPU cap / idle-only impact
+Cloud-only baseline (1–2 VMs) Cost and time reference
+Hybrid burst under peer shortage Overflow effectiveness
+Hybrid burst under reclaim storm Cloud as reclaim backstop
+Checkpoint to object storage on/off Durability vs overhead
+Baselines: single PC; campus-only static partition; campus reclaim-aware; cloud-only; proposed
+hybrid policy.
+16. Expected Outcomes and Deliverables
+22. Working master, campus worker, and cloud-burst worker path with consent flow.
+23. OpenMP-accelerated scientific demo jobs.
+24. Burst policy module and VM lifecycle scripts.
+25. Architecture diagrams, protocol notes, and user guide.
+26. Experimental graphs and tables (including hybrid vs campus-only).
+27. Project report suitable for journal conversion.
+28. Ethics note for campus consent procedures.
+17. Novelty and Contribution Statement
+The contribution is not the invention of volunteer computing or of cloud bursting in isolation.
+The contribution is an integrated hybrid fabric that prefers explicit consent-driven campus
+workers, enforces owner-QoS controls, uses intra-worker OpenMP parallelism, handles reclaim
+as a normal event, and activates cloud-burst overflow under peer shortage, reclaim pressure, or
+deadline risk—evaluated with both HPC performance metrics and cloud cost proxies on
+heterogeneous campus devices.
+18. Limitations
+ Campus performance depends on network quality and consent duration.
+ Cloud burst requires network reachability to the master and careful credential handling.
+ Free-tier quotas limit large cloud experiments.
+ Tightly coupled MPI across unreliable Wi-Fi remains out of default scope.
+ Antivirus may flag unsigned campus executables.
+
+===== PAGE 16 =====
+ Open internet marketplace hardening is beyond this academic phase.
+19. Ethical Considerations and Consent
+All campus participants receive plain-language disclosure before joining. Personal files are
+not scanned. Communication is limited to task data, heartbeats, and results. Participants may
+leave at any time. Cloud credentials stay with the project operators, not with student workers.
+Experimental logs use anonymous node IDs where possible. Institutional laboratory permission is
+obtained where required.
+20. Future Scope
+ Stronger sandboxing for third-party jobs.
+ Stable-lab MPI+OpenMP mode beside the task-queue mode.
+ Reputation and accounting for a campus marketplace pilot.
+ Spot/preemptible cloud instances with the same reclaim logic.
+ Energy and thermal reporting on laptops.
+ Multi-cloud burst cost comparison.
+21. Project Timeline (Indicative, 16 Weeks)
+Weeks Work
+1–2 Survey refinement, consent text, cloud account setup,
+requirements
+3–5 Master–campus worker prototype and one OpenMP
+kernel
+6–8 Reclaim path, owner policies, logging
+9–11 Cloud worker image, burst controller, object storage
+checkpoints
+12–14 Hybrid experiments and analysis
+15–16 Report, slides, journal draft
+22. Conclusion
+Idle campus workstations can support meaningful scientific computing when participation is
+consented, interruption is expected, and multicore CPUs are used carefully. Cloud resources can
+protect deadlines when peers disappear or capacity runs short, provided burst is policy-driven and
+short-lived. This project builds and evaluates a hybrid consent-driven desktop grid with cloud-
+burst overflow for interrupt-tolerant academic workloads, clarifying how far a campus-first pool
+can go and when modest cloud assistance is justified.
+
+===== PAGE 17 =====
+23. Selected References
+Expand the following indicative sources into full bibliographic entries (authors, title, venue, year,
+pages/DOI) as required by the target journal or college format.
+[1] D. P. Anderson, “BOINC: A System for Public-Resource Computing and Storage,” IEEE/ACM Grid
+Computing Workshop, 2004 (and later BOINC documentation).
+[2] M. Litzkow, M. Livny, and M. Mutka, “Condor—A Hunter of Idle Workstations,” ICDCS, 1988;
+modern HTCondor documentation.
+[3] Folding@home project publications and technical overviews on volunteer molecular simulation.
+[4] R. Rabenseifner, G. Hager, and G. Jost, “Hybrid MPI/OpenMP Parallel Programming on Clusters of
+Multi-Core SMP Nodes,” PDP, 2009.
+[5] N. Losada et al., portable application-level checkpointing for hybrid MPI–OpenMP applications.
+[6] Campus GPU sharing and reclaim-oriented systems (e.g., recent GPUnion / reclaim-aware campus
+networking papers).
+[7] Literature on cloud bursting and hybrid HPC–cloud resource management.
+[8] Studies and industry reports on decentralised or marketplace compute (Akash, Vast.ai, and
+predictability-versus-cost analyses).
+[9] SZTAKI Desktop Grid literature on institutional desktop grids and hierarchical pooling.
+[10] MPI Forum materials on fault tolerance directions (e.g., ULFM) for contrast with task-queue reclaim
+on volatile nodes.
+24. Submission Checklist
+ Title page completed with team members and guide name
+ Synopsis signed where required by the department
+ Hardware and software requirement sheet attached (campus + cloud free tier)
+ Consent form draft included as appendix
+ Gantt chart prepared from the timeline in Section 21
+ Plagiarism check completed on the final PDF as per college rules
