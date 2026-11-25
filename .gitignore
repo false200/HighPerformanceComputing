@@ -10,8 +10,12 @@ data/results/*
 !data/results/.gitkeep
 experiments/out/*
 !experiments/out/.gitkeep
-.pdf_extract.txt
-pdf_extract.txt
 .venv/
 venv/
 *.exe
+
+# Spec / scratch (keep out of the public tree)
+*.pdf
+pdf_extract.txt
+.pdf_extract.txt
+qa/
