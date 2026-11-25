@@ -19,6 +19,9 @@ scheduling:
   max_cloud_vms: 2
   cloud_idle_timeout_sec: 15.0
   default_deadline_sec: 120.0
+  # Ray-inspired (adapted, not Ray itself)
+  max_retries: 3              # fail task after attempts > max_retries
+  placement: "spread"         # spread | pack
 
 owner_qos:
   default_cpu_cap_threads: 0   # 0 = use all reported cores

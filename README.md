@@ -307,6 +307,7 @@ Project ethics & consent drafts: [`docs/ethics.md`](docs/ethics.md), [`consent/c
 ### Master / orchestration
 
 - **Python asyncio TCP server** — scheduler, reclaim, burst, metrics (`python -m master`)
+- **Ray-inspired core (adapted)** — logical resources, ObjectRef/lineage, GCS, max_retries — not the Ray package; see [`docs/ray_inspired_core.md`](docs/ray_inspired_core.md)
 - **PyYAML** — `config/default.yaml`
 - **Flask** — optional dashboard
 - **boto3** — optional S3-compatible object store

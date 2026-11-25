@@ -19,7 +19,7 @@ def test_reclaim_sets_timestamp_and_recovery_on_complete():
     time.sleep(0.05)
     assigns2 = s.assign_next()
     assert assigns2 and assigns2[0][0].worker_id == "c2"
-    job2, recovery = s.complete_task(tid, {"checksum": 1.0, "elapsed_ms": 10})
+    job2, recovery, _ref = s.complete_task(tid, {"checksum": 1.0, "elapsed_ms": 10})
     assert recovery is not None and recovery >= 0.05
     assert task.reclaimed_at is None
     assert job2 is not None
@@ -58,23 +58,25 @@ def test_stale_result_after_reclaim_is_rejected():
     assert s.task_index[tid].state == TaskState.ASSIGNED
     assert s.task_index[tid].worker_id == "c2"
 
-    stale_job, stale_recovery = s.complete_task(
+    stale_job, stale_recovery, stale_ref = s.complete_task(
         tid,
         {"checksum": 1.0, "elapsed_ms": 10},
         worker_id="c1",
     )
     assert stale_job is None
     assert stale_recovery is None
+    assert stale_ref is None
     assert s.task_index[tid].state == TaskState.ASSIGNED
     assert s.task_index[tid].worker_id == "c2"
     assert s.assigned[tid] == "c2"
     assert not job.finished_at
 
-    final_job, final_recovery = s.complete_task(
+    final_job, final_recovery, final_ref = s.complete_task(
         tid,
         {"checksum": 2.0, "elapsed_ms": 10},
         worker_id="c2",
     )
+    assert final_ref is not None
     assert final_recovery is not None and final_recovery >= 0.0
     assert final_job is not None
     assert s.task_index[tid].state == TaskState.DONE

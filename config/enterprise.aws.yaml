@@ -21,6 +21,8 @@ scheduling:
   max_cloud_vms: 2
   cloud_idle_timeout_sec: 20.0
   default_deadline_sec: 300.0
+  max_retries: 3
+  placement: "spread"
 
 owner_qos:
   default_cpu_cap_threads: 0

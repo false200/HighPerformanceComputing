@@ -60,6 +60,7 @@ Out of scope: tightly coupled MPI over student Wi-Fi, untrusted binary marketpla
 |-------|----------|-----------|
 | **Presentation / ops** | Consent text, stdin controls, Flask dashboard, CLI client | `worker/consent.py`, `worker/agent.py`, `dashboard/app.py`, `master/client.py` |
 | **Orchestration** | Job partition, peer-first assign, reclaim, burst evaluate/launch/retire | `master/server.py`, `master/scheduler.py`, `master/burst.py` |
+| **Ray-inspired core** | Logical resources, ObjectRef + lineage, GCS metadata, max_retries, pack/spread | `master/resources.py`, `object_ref.py`, `gcs.py` — see [`ray_inspired_core.md`](ray_inspired_core.md) |
 | **Execution** | OpenMP scientific kernels invoked as a native binary | `kernels/omp_kernels.cpp` → `bin/omp_kernels` |
 | **Platform** | JSON/TCP protocol, local/S3 object store, Docker/AWS launch stubs, config | `protocol/`, `master/storage.py`, `docker/`, `scripts/aws_*`, `config/default.yaml` |
 

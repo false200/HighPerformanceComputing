@@ -140,6 +140,7 @@ class MasterServer:
             "auth": bool(self.join_token),
             "storage": self.store.backend,
             "burst_mode": self.burst.mode,
+            "gcs": self.scheduler.gcs.snapshot(),
         }
 
     async def serve_forever(self) -> None:
@@ -320,28 +321,40 @@ class MasterServer:
         tid = msg["task_id"]
         result = msg.get("result", {})
         worker_id = msg.get("worker_id")
-        job, recovery = self.scheduler.complete_task(tid, result, worker_id=worker_id)
+        uri = self.store.put_json("results", tid, {"task_id": tid, "result": result})
+        job, recovery, obj_ref = self.scheduler.complete_task(
+            tid, result, worker_id=worker_id, result_uri=uri
+        )
         if job is None:
             return make(MessageType.ERROR, error="stale or unknown task result", task_id=tid)
         metrics = self._job_metrics_for(job.job_id)
         if recovery is not None and metrics is not None:
             metrics.reclaim_recovery_sec += recovery
-        uri = self.store.put_json("results", tid, {"task_id": tid, "result": result})
         if job.finished_at:
             self._finalize_job(job)
-        return make(MessageType.TASK_RESULT, ok=True, stored=uri)
+        return make(
+            MessageType.TASK_RESULT,
+            ok=True,
+            stored=uri,
+            object_ref=obj_ref.ref_id if obj_ref else None,
+        )
 
     def _on_checkpoint(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         tid = msg["task_id"]
         cp = msg.get("checkpoint", {})
         if tid not in self.scheduler.task_index:
             return make(MessageType.ERROR, error="stale or unknown task checkpoint", task_id=tid)
-        self.scheduler.checkpoint_task(tid, cp)
         uri = self.store.put_json("checkpoints", tid, {"task_id": tid, "checkpoint": cp})
+        obj_ref = self.scheduler.checkpoint_task(tid, cp, uri=uri)
         metrics = self._job_metrics_for_task(tid)
         if metrics is not None:
             metrics.checkpoint_uris.append(uri)
-        return make(MessageType.TASK_CHECKPOINT, ok=True, stored=uri)
+        return make(
+            MessageType.TASK_CHECKPOINT,
+            ok=True,
+            stored=uri,
+            object_ref=obj_ref.ref_id if obj_ref else None,
+        )
 
     def _on_leave(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         wid = msg["worker_id"]
@@ -377,9 +390,19 @@ class MasterServer:
         kernel = msg.get("kernel", "heat2d")
         policy = msg.get("policy", "hybrid")
         n_chunks = int(msg.get("chunks", 8))
-        deadline = float(msg.get("deadline_sec", self.cfg.get("scheduling", {}).get("default_deadline_sec", 120)))
+        sched_cfg = self.cfg.get("scheduling", {})
+        deadline = float(msg.get("deadline_sec", sched_cfg.get("default_deadline_sec", 120)))
+        max_retries = int(msg.get("max_retries", sched_cfg.get("max_retries", 3)))
+        placement = str(msg.get("placement", sched_cfg.get("placement", "spread")))
         specs = partition_job(kernel, self.cfg, n_chunks)
-        job = self.scheduler.create_job(kernel, specs, policy=policy, deadline_sec=deadline)
+        job = self.scheduler.create_job(
+            kernel,
+            specs,
+            policy=policy,
+            deadline_sec=deadline,
+            max_retries=max_retries,
+            placement=placement,
+        )
         self.active_job_id = job.job_id
         serial_proxy = self._serial_proxy(kernel, specs)
         self._job_metrics[job.job_id] = RunMetrics(
@@ -487,8 +510,14 @@ class MasterServer:
                 if job and job.policy == "campus_only":
                     campus_only = True
 
+            place = None
+            if self.active_job_id and self.active_job_id in self.scheduler.jobs:
+                place = self.scheduler.jobs[self.active_job_id].placement
             assignments = self.scheduler.assign_next(
-                peer_first=prefer_peer, cloud_only=cloud_only, campus_only=campus_only
+                peer_first=prefer_peer,
+                cloud_only=cloud_only,
+                campus_only=campus_only,
+                placement=place,
             )
             for worker, task in assignments:
                 if worker.writer is None:
@@ -499,6 +528,10 @@ class MasterServer:
                     job_id=task.job_id,
                     kernel=task.kernel,
                     params=task.params,
+                    resources=task.resources.to_dict(),
+                    object_ref=task.checkpoint_ref,
+                    attempt=task.attempts,
+                    max_retries=task.max_retries,
                 )
                 try:
                     worker.writer.write(encode(payload))
