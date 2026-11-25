@@ -17,3 +17,7 @@
 ## Notes for developers
 - `scripts/run_experiments.ps1` includes a `cloud_only_batch` scenario, but the current `experiments/out/summary.txt` and `data/logs/metrics.csv` do not include a matching result row.
 - The current metrics table shows cloud workers on some hybrid runs but still reports `cloud_cost_proxy_usd = 0`, which matches BUG-002.
+
+## Fix applied BUG-002
+- `master/scheduler.py` now supports a `campus_only` assignment mode that never falls back to cloud workers.
+- `master/server.py` passes that mode through for `job.policy == "campus_only"`.

@@ -89,6 +89,8 @@ class Scheduler:
     def set_paused(self, worker_id: str, paused: bool) -> None:
         w = self.workers.get(worker_id)
         if w:
+            if paused and not w.paused:
+                self.reclaim_worker(worker_id, reason="pause", info=w)
             w.paused = paused
 
     def create_job(
@@ -149,6 +151,7 @@ class Scheduler:
         self,
         peer_first: bool = True,
         cloud_only: bool = False,
+        campus_only: bool = False,
     ) -> List[Tuple[WorkerInfo, Task]]:
         assignments: List[Tuple[WorkerInfo, Task]] = []
         if not self.pending:
@@ -156,6 +159,8 @@ class Scheduler:
 
         if cloud_only:
             pool = self.eligible_workers("cloud")
+        elif campus_only:
+            pool = self.eligible_workers("campus")
         elif peer_first:
             pool = self.eligible_workers("campus")
             if not pool:
@@ -213,6 +218,27 @@ class Scheduler:
         if task:
             task.checkpoint = checkpoint
 
+    def reclaim_task(
+        self,
+        worker_id: str,
+        task_id: str,
+        reason: str = "pause",
+    ) -> Optional[Task]:
+        task = self.task_index.get(task_id)
+        if not task or self.assigned.get(task_id) != worker_id:
+            return None
+        now = time.time()
+        task.state = TaskState.RECLAIMED
+        task.worker_id = None
+        task.reclaimed_at = now
+        self.assigned.pop(task_id, None)
+        self.pending.append(task_id)
+        task.state = TaskState.PENDING
+        self.reclaim_events += 1
+        self.reclaim_timestamps.append(now)
+        self.retry_events += 1
+        return task
+
     def reclaim_worker(
         self,
         worker_id: str,
@@ -221,20 +247,10 @@ class Scheduler:
     ) -> List[Task]:
         reclaimed: List[Task] = []
         to_drop = [tid for tid, wid in self.assigned.items() if wid == worker_id]
-        now = time.time()
         for tid in to_drop:
-            task = self.task_index[tid]
-            task.state = TaskState.RECLAIMED
-            task.worker_id = None
-            task.reclaimed_at = now
-            self.assigned.pop(tid, None)
-            self.pending.append(tid)
-            task.state = TaskState.PENDING
-            reclaimed.append(task)
-            self.retry_events += 1
-        if to_drop:
-            self.reclaim_events += 1
-            self.reclaim_timestamps.append(now)
+            task = self.reclaim_task(worker_id, tid, reason=reason)
+            if task is not None:
+                reclaimed.append(task)
         return reclaimed
 
     def reclaim_rate(self, window_sec: float = 30.0) -> float:

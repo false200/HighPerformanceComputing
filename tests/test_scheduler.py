@@ -14,6 +14,24 @@ def test_peer_first_assignment():
     assert job.job_id
 
 
+def test_campus_only_blocks_cloud_fallback():
+    s = Scheduler()
+    s.register_worker(WorkerInfo("k1", "cloud", 2, 2048, "linux", consented=True))
+    s.create_job("batch", [{"params": {"offset": 0, "count": 1}}])
+    assigns = s.assign_next(peer_first=True, campus_only=True)
+    assert assigns == []
+
+
+def test_campus_only_prefers_campus_when_available():
+    s = Scheduler()
+    s.register_worker(WorkerInfo("c1", "campus", 4, 4096, "win", consented=True))
+    s.register_worker(WorkerInfo("k1", "cloud", 2, 2048, "linux", consented=True))
+    s.create_job("batch", [{"params": {"offset": 0, "count": 1}}])
+    assigns = s.assign_next(peer_first=True, campus_only=True)
+    assert len(assigns) == 1
+    assert assigns[0][0].worker_id == "c1"
+
+
 def test_reclaim_requeues():
     s = Scheduler()
     s.register_worker(WorkerInfo("c1", "campus", 2, 2048, "win", consented=True))

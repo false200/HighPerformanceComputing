@@ -27,6 +27,7 @@ storage:
 
 burst:
   mode: "local_sim"            # local_sim | aws
+  aws_master_host: null        # public/reachable host or IP for EC2 workers
   aws_ami: "ami-PLACEHOLDER"
   aws_instance_type: "t3.micro"
   aws_region: "us-east-1"

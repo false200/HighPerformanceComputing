@@ -1,20 +1,13 @@
 {
   "round": 1,
   "max_rounds": 20,
-  "phase": "user_swarm_hunting",
-  "baseline_passed": 28,
-  "baseline_failed": 0,
-  "open": {"critical": 0, "high": 0, "medium": 0, "low": 0},
-  "filed_total": 0,
-  "fixed_total": 0,
-  "error_margin": null,
-  "stop_reason": null,
-  "agents_round1": {
-    "master_explorer": "b005d3fa-ca8d-4ef4-8ba3-30d6112c8573",
-    "worker_explorer": "6a3b202a-eabb-41bd-a6ac-e6a1c2247dc4",
-    "user_campus_peer": "edb81dd0-4207-45d7-b81d-437962874897",
-    "user_submitter": "9ad0d759-9332-44dc-9a13-3249bd2d37a6",
-    "user_operator": "0ff6a2d9-4afa-42dc-8c5b-167ca0a8158b"
-  },
-  "next_action": "On wake: collect qa/bugs/round01_*.md + explorer reports → triage BOARD.md → spawn developer swarm → retest → bump round"
+  "phase": "fixing_last_high",
+  "open": {"critical": 0, "high": 1, "medium": 8, "low": 2},
+  "filed_total": 16,
+  "fixed_total": 5,
+  "error_margin": 0.625,
+  "pytest_latest": "36 passed",
+  "in_progress_fixes": ["BUG-012"],
+  "round1_swarm_complete": true,
+  "next_action": "Land BUG-012 then spawn medium-fix swarm + Round 2 user hunt"
 }

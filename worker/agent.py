@@ -7,6 +7,7 @@ import os
 import platform
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -70,7 +71,12 @@ def memory_mb() -> int:
     return 4096
 
 
-def run_kernel(kernel: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def run_kernel(
+    kernel: str,
+    params: Dict[str, Any],
+    proc_setter=None,
+    proc_clearer=None,
+) -> Dict[str, Any]:
     binary = find_kernel_binary()
     threads = int(params.get("threads") or 0)
     cmd = [str(binary), kernel]
@@ -97,12 +103,25 @@ def run_kernel(kernel: str, params: Dict[str, Any]) -> Dict[str, Any]:
         cmd += ["--threads", str(threads)]
         set_omp_threads(threads)
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(ROOT),
+    )
+    if proc_setter is not None:
+        proc_setter(proc)
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        if proc_clearer is not None:
+            proc_clearer(proc)
     if proc.returncode != 0:
-        raise RuntimeError(f"kernel failed: {proc.stderr or proc.stdout}")
-    lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip().startswith("{")]
+        raise RuntimeError(f"kernel failed: {stderr or stdout}")
+    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip().startswith("{")]
     if not lines:
-        raise RuntimeError(f"no JSON from kernel: {proc.stdout}")
+        raise RuntimeError(f"no JSON from kernel: {stdout}")
     return json.loads(lines[-1])
 
 
@@ -120,6 +139,8 @@ class WorkerAgent:
         self.idle_only = bool(args.idle_only)
         self._inbox: asyncio.Queue = asyncio.Queue()
         self._replies: asyncio.Queue = asyncio.Queue()
+        self._kernel_proc_lock = threading.Lock()
+        self._kernel_proc: Optional[subprocess.Popen[Any]] = None
         self._send_lock = asyncio.Lock()
         self._rpc_lock = asyncio.Lock()
         self._expect_reply = False
@@ -194,6 +215,44 @@ class WorkerAgent:
         if self.args.controls:
             return True
         return bool(sys.stdin and sys.stdin.isatty())
+
+    def _set_kernel_proc(self, proc: Optional[subprocess.Popen[Any]]) -> None:
+        with self._kernel_proc_lock:
+            self._kernel_proc = proc
+
+    def _get_kernel_proc(self) -> Optional[subprocess.Popen[Any]]:
+        with self._kernel_proc_lock:
+            return self._kernel_proc
+
+    def _clear_kernel_proc(self, proc: subprocess.Popen[Any]) -> None:
+        with self._kernel_proc_lock:
+            if self._kernel_proc is proc:
+                self._kernel_proc = None
+
+    def _stop_kernel_proc(self) -> None:
+        proc = self._get_kernel_proc()
+        if proc is None:
+            return
+        if proc.poll() is not None:
+            self._clear_kernel_proc(proc)
+            return
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        finally:
+            self._clear_kernel_proc(proc)
 
     async def _reader_loop(self) -> None:
         """Single demux reader — avoids heartbeat/work racing on StreamReader."""
@@ -300,12 +359,14 @@ class WorkerAgent:
             mtype = msg.get("type")
             if mtype == MessageType.TASK_ASSIGN.value:
                 if self.paused or self.leaving:
+                    await self._reclaim_dropped_task(msg)
                     continue
                 if self.idle_only:
                     while not system_is_idle() and not self.leaving and not self.paused:
                         print("[worker] idle-only: system busy, waiting…", flush=True)
                         await asyncio.sleep(2.0)
                     if self.leaving or self.paused:
+                        await self._reclaim_dropped_task(msg)
                         continue
                 await self._execute_task(msg)
             elif mtype == MessageType.SHUTDOWN.value:
@@ -314,6 +375,20 @@ class WorkerAgent:
                 self.paused = True
             elif mtype == MessageType.RESUME.value:
                 self.paused = False
+
+    async def _reclaim_dropped_task(self, msg: Dict[str, Any]) -> None:
+        try:
+            await self._request(
+                make(
+                    MessageType.TASK_RECLAIM,
+                    worker_id=self.worker_id,
+                    task_id=msg["task_id"],
+                    reason="leave" if self.leaving else "pause",
+                ),
+                timeout=5,
+            )
+        except Exception:
+            pass
 
     async def _execute_task(self, msg: Dict[str, Any]) -> None:
         tid = msg["task_id"]
@@ -325,32 +400,41 @@ class WorkerAgent:
         self.current_task = tid
         print(f"[worker] start task {tid} kernel={kernel}", flush=True)
 
-        await self._request(make(
-            MessageType.TASK_CHECKPOINT,
-            worker_id=self.worker_id,
-            task_id=tid,
-            checkpoint={"phase": "start", "ts": time.time()},
-        ))
-
         try:
-            result = await asyncio.to_thread(run_kernel, kernel, params)
-        except Exception as exc:
-            result = {"kernel": kernel, "checksum": 0.0, "error": str(exc), "elapsed_ms": 0.0}
+            await self._request(make(
+                MessageType.TASK_CHECKPOINT,
+                worker_id=self.worker_id,
+                task_id=tid,
+                checkpoint={"phase": "start", "ts": time.time()},
+            ))
 
-        if self.leaving:
-            return
+            try:
+                result = await asyncio.to_thread(
+                    run_kernel,
+                    kernel,
+                    params,
+                    self._set_kernel_proc,
+                    self._clear_kernel_proc,
+                )
+            except Exception as exc:
+                result = {"kernel": kernel, "checksum": 0.0, "error": str(exc), "elapsed_ms": 0.0}
 
-        await self._request(make(
-            MessageType.TASK_RESULT,
-            worker_id=self.worker_id,
-            task_id=tid,
-            result=result,
-        ))
-        self.current_task = None
-        print(f"[worker] done task {tid} checksum={result.get('checksum')}", flush=True)
+            if self.leaving:
+                return
+
+            await self._request(make(
+                MessageType.TASK_RESULT,
+                worker_id=self.worker_id,
+                task_id=tid,
+                result=result,
+            ))
+            print(f"[worker] done task {tid} checksum={result.get('checksum')}", flush=True)
+        finally:
+            self.current_task = None
 
     async def _leave(self) -> None:
         self.leaving = True
+        await asyncio.to_thread(self._stop_kernel_proc)
         if self.current_task:
             try:
                 await self._request(make(

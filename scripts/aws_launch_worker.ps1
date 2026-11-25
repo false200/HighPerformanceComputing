@@ -26,4 +26,6 @@ aws ec2 run-instances `
   --instance-type $Type `
   --region $Region `
   --user-data $UserDataB64 `
-  --count 1
+  --count 1 `
+  --query "Instances[0].InstanceId" `
+  --output text

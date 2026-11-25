@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 import sys
 import time
@@ -44,6 +45,28 @@ class BurstController:
         self.retirements = 0
         self.vm_seconds = 0.0
         self._events: List[Dict[str, Any]] = []
+
+    def _aws_master_host(self, fallback_host: str) -> str:
+        host = str(self.burst_cfg.get("aws_master_host") or "").strip()
+        if not host:
+            host = str(self.cfg.get("master", {}).get("advertise_host") or "").strip()
+        if not host:
+            host = fallback_host.strip()
+        if host in {"", "127.0.0.1", "0.0.0.0", "::", "localhost"}:
+            raise RuntimeError(
+                "AWS burst requires a reachable master host; set burst.aws_master_host or master.advertise_host"
+            )
+        return host
+
+    @staticmethod
+    def _extract_instance_id(output: str) -> Optional[str]:
+        match = re.search(r"\bi-[0-9a-fA-F]+\b", output)
+        if match:
+            return match.group(0)
+        output = output.strip()
+        if output.startswith("i-"):
+            return output.split()[0]
+        return None
 
     def evaluate(
         self,
@@ -107,13 +130,14 @@ class BurstController:
         )
         return CloudVM(vm_id=vm_id, launched_at=time.time(), process=proc, kind="local_sim")
 
-    async def _launch_aws(self, vm_id: str, host: str, port: int) -> CloudVM:
+    async def _launch_aws(self, vm_id: str, host: str, port: int) -> Optional[CloudVM]:
         script = self.project_root / "scripts" / ("aws_launch_worker.ps1" if os.name == "nt" else "aws_launch_worker.sh")
         if not script.exists():
             raise RuntimeError(f"AWS launch script missing: {script}")
+        master_host = self._aws_master_host(host)
         env = os.environ.copy()
         env.update({
-            "HPC_MASTER_HOST": host,
+            "HPC_MASTER_HOST": master_host,
             "HPC_MASTER_PORT": str(port),
             "HPC_WORKER_ID": vm_id,
             "HPC_AMI": str(self.burst_cfg.get("aws_ami", "")),
@@ -121,14 +145,29 @@ class BurstController:
             "HPC_REGION": str(self.burst_cfg.get("aws_region", "us-east-1")),
         })
         if os.name == "nt":
-            proc = subprocess.Popen(
+            result = subprocess.run(
                 ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)],
                 cwd=str(self.project_root),
                 env=env,
+                check=False,
+                capture_output=True,
+                text=True,
             )
         else:
-            proc = subprocess.Popen(["bash", str(script)], cwd=str(self.project_root), env=env)
-        return CloudVM(vm_id=vm_id, launched_at=time.time(), process=proc, kind="aws")
+            result = subprocess.run(
+                ["bash", str(script)],
+                cwd=str(self.project_root),
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        if result.returncode != 0:
+            return None
+        instance_id = self._extract_instance_id(result.stdout or "")
+        if not instance_id:
+            return None
+        return CloudVM(vm_id=vm_id, launched_at=time.time(), process=None, kind="aws", instance_id=instance_id)
 
     def mark_busy(self, vm_id: str) -> None:
         vm = self.vms.get(vm_id)

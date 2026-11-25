@@ -158,6 +158,17 @@ class MasterServer:
                 return self._on_result(msg)
             if mtype == MessageType.TASK_CHECKPOINT.value:
                 return self._on_checkpoint(msg)
+            if mtype == MessageType.TASK_RECLAIM.value:
+                reclaimed = self.scheduler.reclaim_task(
+                    msg["worker_id"],
+                    msg["task_id"],
+                    reason=msg.get("reason", "pause"),
+                )
+                return make(
+                    MessageType.TASK_RECLAIM,
+                    ok=True,
+                    requeued=1 if reclaimed is not None else 0,
+                )
             if mtype == MessageType.LEAVE.value:
                 return self._on_leave(msg)
             if mtype == MessageType.PAUSE.value:
@@ -342,17 +353,17 @@ class MasterServer:
             # assign tasks
             prefer_peer = self.peer_first
             cloud_only = False
+            campus_only = False
             if self.active_job_id:
                 job = self.scheduler.jobs.get(self.active_job_id)
                 if job and job.policy == "cloud_only":
                     prefer_peer = False
                     cloud_only = True
                 if job and job.policy == "campus_only":
-                    prefer_peer = True
-                    cloud_only = False
+                    campus_only = True
 
             assignments = self.scheduler.assign_next(
-                peer_first=prefer_peer, cloud_only=cloud_only
+                peer_first=prefer_peer, cloud_only=cloud_only, campus_only=campus_only
             )
             for worker, task in assignments:
                 if worker.writer is None:
@@ -408,7 +419,11 @@ class MasterServer:
             print(f"[master] retired idle cloud worker {vid}", flush=True)
 
     async def _do_burst(self, reason: str) -> None:
-        connect_host = "127.0.0.1"
+        connect_host = (
+            str(self.cfg.get("burst", {}).get("aws_master_host") or "").strip()
+            or str(self.cfg.get("master", {}).get("advertise_host") or "").strip()
+            or self.host
+        )
         vm = await self.burst.maybe_burst(reason, connect_host, self.port)
         if vm:
             print(f"[master] cloud-burst launch {vm.vm_id} reason={reason}", flush=True)
