@@ -214,16 +214,19 @@ run_demo.ps1 / run_all.ps1
 
 ### Classroom / LAN
 - Master on lab server or instructor laptop (reachable TCP).
-- Students run `python -m worker --master host:9100`.
+- Students run `Connect.bat` / `python -m worker --master host:9100`.
 - Burst stays `local_sim` or unused (`campus_only`).
 
-### Hybrid + AWS (operator-owned)
-1. Bake AMI or push `docker/` image with repo + OpenMP binary.
-2. Fill `burst.aws_*` in config; set `burst.mode: aws`.
-3. Open security group to master:9100.
-4. Burst controller calls launch stub; idle retire may `terminate-instances`.
+### AWS Gateway (curriculum default for “deploy on AWS”)
+- **Master on EC2 = gateway.** Clients and campus workers connect outbound to the public IP `:9100`.
+- No separate API Gateway required for TCP task fabric; optional NLB later for stable DNS.
+- Deploy: `DeployGateway.bat` / `scripts/aws_deploy_gateway.ps1` — details in `docs/aws_deployment.md`.
 
-Checkpoints may use S3 for durability across reclaim.
+### Hybrid + AWS burst (operator-owned)
+1. Gateway already on AWS (above).
+2. Fill `burst.aws_*`; set `burst.mode: aws`; set `advertise_host` / `aws_master_host`.
+3. Burst controller launches short-lived worker VMs into the same queue.
+4. Checkpoints may use S3 (`storage.backend: s3`).
 
 ---
 

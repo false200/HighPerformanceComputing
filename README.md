@@ -239,13 +239,21 @@ First time on each PC you need Python 3 + a `g++` with OpenMP (MSYS2 MinGW64 on 
 | `hybrid` | Peer-first + policy burst |
 | `cloud_only` | Burst workers only |
 
-### Cloud / AWS (operator-owned)
+### AWS curriculum deploy (Master = Gateway)
 
-1. Configure `config/default.yaml` → `burst.aws_*`
-2. Set `burst.mode: aws` (default remains `local_sim`)
-3. Ensure master TCP **9100** is reachable from burst VMs
-4. Use `docker/Dockerfile` or bake `/opt/hpc-grid` into an AMI
-5. Launch path: `scripts/aws_launch_worker.ps1` / `.sh`
+Your “gateway on AWS” idea **is** this design: put the **master** on EC2; laptops only **Connect** outbound.
+
+```text
+SubmitJob / Connect.bat  →  AWS EC2 Master:9100  →  campus workers (+ optional burst VMs)
+```
+
+1. Configure AWS CLI (`aws configure`)
+2. Double-click [`DeployGateway.bat`](DeployGateway.bat) or run `.\scripts\aws_deploy_gateway.ps1`
+3. Wait ~2 minutes, then use the printed **public IP** in `Connect.bat` and:
+   `.\scripts\submit_job.ps1 -Master <PUBLIC_IP>:9100`
+4. Optional overflow: set `burst.mode: aws` on the gateway (see [`docs/aws_deployment.md`](docs/aws_deployment.md))
+
+Full topology, security notes, PDF mapping: **[`docs/aws_deployment.md`](docs/aws_deployment.md)**
 
 ### Experiments
 

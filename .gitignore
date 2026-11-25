@@ -22,3 +22,5 @@ qa/
 
 # Per-laptop donation prefs (written by Connect.bat)
 config/worker_local.yaml
+# Local AWS deploy output (instance id / public IP)
+config/aws_gateway_local.yaml
