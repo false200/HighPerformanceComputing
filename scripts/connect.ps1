@@ -2,6 +2,7 @@
 param(
   [string]$MasterIP = "",
   [string]$Name = "",
+  [string]$Token = "",
   [int]$CpuCap = -1,
   [int]$RamCapMb = -1,
   [int]$MaxTasks = -1,
@@ -48,6 +49,12 @@ if (-not $Name) {
   $Name = $env:COMPUTERNAME
   if (-not $Name) { $Name = "worker-" + (Get-Random -Maximum 9999) }
 }
+
+if (-not $Token) { $Token = $env:HPC_JOIN_TOKEN }
+if (-not $Token) {
+  $Token = Read-Host "Join token (from your operator / AWS gateway — leave blank for open lab masters)"
+}
+if ($Token) { $env:HPC_JOIN_TOKEN = $Token }
 
 $logical = [Environment]::ProcessorCount
 if ($logical -lt 1) { $logical = 4 }
@@ -130,6 +137,7 @@ $pyArgs = @(
   "--gpus", "$Gpus",
   "--profile", $ProfilePath
 )
+if ($Token) { $pyArgs += @("--token", $Token) }
 if ($IdleOnly) { $pyArgs += "--idle-only" }
 if ($AutoConsent) { $pyArgs += "--auto-consent" }
 

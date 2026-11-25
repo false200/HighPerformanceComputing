@@ -241,19 +241,21 @@ First time on each PC you need Python 3 + a `g++` with OpenMP (MSYS2 MinGW64 on 
 
 ### AWS curriculum deploy (Master = Gateway)
 
-Your “gateway on AWS” idea **is** this design: put the **master** on EC2; laptops only **Connect** outbound.
+Lean enterprise posture: **thin AWS control plane**, join-token auth, health probes, audit log, optional S3 durability — not K8s/API-GW sprawl.
 
 ```text
 SubmitJob / Connect.bat  →  AWS EC2 Master:9100  →  campus workers (+ optional burst VMs)
+                              health :9101          S3 checkpoints (optional)
 ```
 
-1. Configure AWS CLI (`aws configure`)
-2. Double-click [`DeployGateway.bat`](DeployGateway.bat) or run `.\scripts\aws_deploy_gateway.ps1`
-3. Wait ~2 minutes, then use the printed **public IP** in `Connect.bat` and:
-   `.\scripts\submit_job.ps1 -Master <PUBLIC_IP>:9100`
-4. Optional overflow: set `burst.mode: aws` on the gateway (see [`docs/aws_deployment.md`](docs/aws_deployment.md))
+1. `aws configure`
+2. (Recommended) `$env:HPC_JOIN_TOKEN = "long-random-secret"`
+3. Double-click [`DeployGateway.bat`](DeployGateway.bat)
+4. Wait ~2 minutes; check `http://<ip>:9101/health`
+5. `Connect.bat` → public IP **and join token**
+6. `SubmitJob.bat` (same token via env)
 
-Full topology, security notes, PDF mapping: **[`docs/aws_deployment.md`](docs/aws_deployment.md)**
+Ops: [`docs/enterprise_ops.md`](docs/enterprise_ops.md) · Topology: [`docs/aws_deployment.md`](docs/aws_deployment.md) · Profile: [`config/enterprise.aws.yaml`](config/enterprise.aws.yaml)
 
 ### Experiments
 

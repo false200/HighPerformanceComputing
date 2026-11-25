@@ -37,7 +37,9 @@ class ObjectStore:
         local_path = self.local_root / rel
         local_path.parent.mkdir(parents=True, exist_ok=True)
         text = json.dumps(payload, indent=2)
-        local_path.write_text(text, encoding="utf-8")
+        tmp_path = local_path.with_name(f"{local_path.name}.tmp")
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.replace(local_path)
         uri = f"file://{local_path.resolve()}"
         if self.backend == "s3" and self._s3 is not None:
             s3_key = f"{self.s3_prefix}{rel}"
@@ -52,10 +54,13 @@ class ObjectStore:
 
     def get_json(self, kind: str, key: str) -> Optional[Dict[str, Any]]:
         local_path = self.local_root / kind / f"{key}.json"
-        if local_path.exists():
-            return json.loads(local_path.read_text(encoding="utf-8"))
         if self.backend == "s3" and self._s3 is not None:
             s3_key = f"{self.s3_prefix}{kind}/{key}.json"
-            obj = self._s3.get_object(Bucket=self.s3_bucket, Key=s3_key)
-            return json.loads(obj["Body"].read().decode("utf-8"))
+            try:
+                obj = self._s3.get_object(Bucket=self.s3_bucket, Key=s3_key)
+                return json.loads(obj["Body"].read().decode("utf-8"))
+            except Exception:
+                pass
+        if local_path.exists():
+            return json.loads(local_path.read_text(encoding="utf-8"))
         return None

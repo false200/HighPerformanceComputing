@@ -144,8 +144,10 @@ class WorkerAgent:
             self.gpu_count = detect_gpu_count()
         self.max_tasks = int(getattr(args, "max_tasks", 0) or 0)
         self.idle_only = bool(args.idle_only)
+        self._consented = False
         self._inbox: asyncio.Queue = asyncio.Queue()
         self._replies: asyncio.Queue = asyncio.Queue()
+        self._idle_wait_event = asyncio.Event()
         self._kernel_proc_lock = threading.Lock()
         self._kernel_proc: Optional[subprocess.Popen[Any]] = None
         self._send_lock = asyncio.Lock()
@@ -185,12 +187,27 @@ class WorkerAgent:
                 flush=True,
             )
 
+        self._consented = consented
+        backoff = 1.0
+        while not self.leaving:
+            try:
+                await self._session()
+                break
+            except Exception as exc:
+                if self.leaving:
+                    break
+                print(f"[worker] disconnected ({exc}); reconnecting in {backoff:.0f}s…", flush=True)
+                await self._close()
+                await asyncio.sleep(backoff)
+                backoff = min(30.0, backoff * 2)
+
+    async def _session(self) -> None:
         host, port_s = self.args.master.split(":")
         port = int(port_s)
         self.reader, self.writer = await asyncio.open_connection(host, port)
-
         reader_task = asyncio.create_task(self._reader_loop())
 
+        token = (self.args.token or os.environ.get("HPC_JOIN_TOKEN") or "").strip()
         reg = make(
             MessageType.REGISTER,
             worker_id=self.worker_id,
@@ -201,18 +218,18 @@ class WorkerAgent:
             gpu_count=self.gpu_count,
             max_tasks=self.max_tasks,
             os=platform.platform(),
-            consented=consented,
+            consented=self._consented,
             cpu_cap_threads=self.cpu_cap,
             idle_only=self.idle_only,
             instance_type=self.args.instance_type,
             region=self.args.region,
             name=self.args.name,
+            token=token,
         )
         ack = await self._request(reg)
         if not ack or ack.get("type") != MessageType.REGISTER_ACK.value:
-            print(f"[worker] register failed: {ack}")
             reader_task.cancel()
-            return
+            raise RuntimeError(f"register failed: {ack}")
         self.worker_id = ack.get("worker_id", self.worker_id)
         print(f"[worker] registered as {self.worker_id}", flush=True)
         if self.args.kind == "campus" and self._controls_enabled():
@@ -231,7 +248,6 @@ class WorkerAgent:
                 asyncio.create_task(self._demo_leave(float(self.args.demo_leave_after)))
             await work_task
         finally:
-            self.leaving = True
             hb_task.cancel()
             reader_task.cancel()
             if ctrl_task:
@@ -344,6 +360,7 @@ class WorkerAgent:
             cmd = line.strip().lower()
             if cmd in {"p", "pause"}:
                 self.paused = True
+                self._idle_wait_event.set()
                 try:
                     await self._request(make(MessageType.PAUSE, worker_id=self.worker_id), timeout=5)
                 except Exception:
@@ -351,6 +368,7 @@ class WorkerAgent:
                 print("[controls] paused — no new tasks", flush=True)
             elif cmd in {"r", "resume"}:
                 self.paused = False
+                self._idle_wait_event.set()
                 try:
                     await self._request(make(MessageType.RESUME, worker_id=self.worker_id), timeout=5)
                 except Exception:
@@ -396,7 +414,11 @@ class WorkerAgent:
                 if self.idle_only:
                     while not system_is_idle() and not self.leaving and not self.paused:
                         print("[worker] idle-only: system busy, waiting…", flush=True)
-                        await asyncio.sleep(2.0)
+                        self._idle_wait_event.clear()
+                        try:
+                            await asyncio.wait_for(self._idle_wait_event.wait(), timeout=0.25)
+                        except asyncio.TimeoutError:
+                            pass
                     if self.leaving or self.paused:
                         await self._reclaim_dropped_task(msg)
                         continue
@@ -405,8 +427,10 @@ class WorkerAgent:
                 break
             elif mtype == MessageType.PAUSE.value:
                 self.paused = True
+                self._idle_wait_event.set()
             elif mtype == MessageType.RESUME.value:
                 self.paused = False
+                self._idle_wait_event.set()
 
     async def _reclaim_dropped_task(self, msg: Dict[str, Any]) -> None:
         try:
@@ -448,10 +472,12 @@ class WorkerAgent:
                     self._set_kernel_proc,
                     self._clear_kernel_proc,
                 )
+                ran_to_completion = True
             except Exception as exc:
                 result = {"kernel": kernel, "checksum": 0.0, "error": str(exc), "elapsed_ms": 0.0}
+                ran_to_completion = False
 
-            if self.leaving:
+            if self.leaving and not ran_to_completion:
                 return
 
             await self._request(make(
@@ -466,6 +492,7 @@ class WorkerAgent:
 
     async def _leave(self) -> None:
         self.leaving = True
+        self._idle_wait_event.set()
         await asyncio.to_thread(self._stop_kernel_proc)
         if self.current_task:
             try:
@@ -510,6 +537,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--gpus", type=int, default=-1, help="GPU count to advertise (-1=auto-detect)")
     p.add_argument("--max-tasks", type=int, default=0, help="Max concurrent tasks (0=use CPU cap)")
     p.add_argument("--profile", default=None, help="YAML resource profile path")
+    p.add_argument("--token", default="", help="Pool join token (or HPC_JOIN_TOKEN env)")
     p.add_argument("--idle-only", action="store_true")
     p.add_argument("--below-normal-priority", action="store_true", default=True)
     p.add_argument("--no-below-normal-priority", action="store_false", dest="below_normal_priority")

@@ -34,9 +34,16 @@ def encode(msg: Dict[str, Any]) -> bytes:
     return (json.dumps(msg, separators=(",", ":")) + "\n").encode("utf-8")
 
 
+MAX_MESSAGE_BYTES = 1_000_000  # 1 MiB hard cap against oversized payloads
+
+
 def decode(line: bytes | str) -> Optional[Dict[str, Any]]:
     if isinstance(line, bytes):
+        if len(line) > MAX_MESSAGE_BYTES:
+            raise ValueError("message too large")
         line = line.decode("utf-8", errors="replace")
+    elif len(line) > MAX_MESSAGE_BYTES:
+        raise ValueError("message too large")
     line = line.strip()
     if not line:
         return None

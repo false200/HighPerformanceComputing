@@ -25,6 +25,19 @@ def ensure_binary():
     assert BIN.exists()
 
 
+def _wait_port(host: str, port: int, timeout: float = 15.0) -> None:
+    deadline = time.time() + timeout
+    last_err: Exception | None = None
+    while time.time() < deadline:
+        try:
+            with __import__("socket").create_connection((host, port), timeout=0.5):
+                return
+        except OSError as exc:
+            last_err = exc
+            time.sleep(0.2)
+    raise AssertionError(f"port {host}:{port} not ready: {last_err}")
+
+
 def test_end_to_end_campus_job(ensure_binary, tmp_path):
     """Start master + 1 campus worker, submit batch job, wait for completion."""
     env = {**dict(**{k: v for k, v in __import__("os").environ.items()}), "PYTHONPATH": str(ROOT)}
@@ -32,11 +45,13 @@ def test_end_to_end_campus_job(ensure_binary, tmp_path):
         [sys.executable, "-m", "master", "--config", str(ROOT / "config" / "default.yaml")],
         cwd=str(ROOT),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     try:
-        time.sleep(2.0)
+        _wait_port("127.0.0.1", 9100, timeout=15.0)
+        if master.poll() is not None:
+            raise AssertionError(f"master exited early with code {master.returncode}")
         worker = subprocess.Popen(
             [
                 sys.executable, "-m", "worker",
@@ -48,11 +63,19 @@ def test_end_to_end_campus_job(ensure_binary, tmp_path):
             ],
             cwd=str(ROOT),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         try:
-            time.sleep(1.5)
+            # Wait until worker has had a chance to register
+            deadline = time.time() + 10.0
+            while time.time() < deadline and worker.poll() is None:
+                time.sleep(0.3)
+                # probe master still up
+                if master.poll() is not None:
+                    raise AssertionError(f"master died during worker start: {master.returncode}")
+                break
+            time.sleep(0.7)
             client = subprocess.run(
                 [
                     sys.executable, "-m", "master.client",

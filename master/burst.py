@@ -44,6 +44,7 @@ class BurstController:
         self.launches = 0
         self.retirements = 0
         self.vm_seconds = 0.0
+        self._launch_lock = asyncio.Lock()
         self._events: List[Dict[str, Any]] = []
 
     def _aws_master_host(self, fallback_host: str) -> str:
@@ -91,18 +92,19 @@ class BurstController:
         return False
 
     async def maybe_burst(self, reason: str, master_host: str, master_port: int) -> Optional[CloudVM]:
-        if len(self.vms) >= self.max_vms:
-            return None
-        vm_id = f"cloud-{self.launches + 1}-{int(time.time()) % 100000}"
-        if self.mode == "aws":
-            vm = await self._launch_aws(vm_id, master_host, master_port)
-        else:
-            vm = await self._launch_local(vm_id, master_host, master_port)
-        if vm:
-            self.vms[vm_id] = vm
-            self.launches += 1
-            self._events.append({"ts": time.time(), "event": "launch", "vm_id": vm_id, "reason": reason})
-        return vm
+        async with self._launch_lock:
+            if len(self.vms) >= self.max_vms:
+                return None
+            vm_id = f"cloud-{self.launches + 1}-{int(time.time()) % 100000}"
+            if self.mode == "aws":
+                vm = await self._launch_aws(vm_id, master_host, master_port)
+            else:
+                vm = await self._launch_local(vm_id, master_host, master_port)
+            if vm:
+                self.vms[vm_id] = vm
+                self.launches += 1
+                self._events.append({"ts": time.time(), "event": "launch", "vm_id": vm_id, "reason": reason})
+            return vm
 
     async def _launch_local(self, vm_id: str, host: str, port: int) -> CloudVM:
         py = sys.executable
@@ -121,12 +123,20 @@ class BurstController:
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+        env = os.environ.copy()
+        # Propagate join token so burst workers can REGISTER against a locked master
+        token = str((self.cfg.get("auth") or {}).get("join_token") or "").strip()
+        if os.environ.get("HPC_JOIN_TOKEN"):
+            env["HPC_JOIN_TOKEN"] = os.environ["HPC_JOIN_TOKEN"]
+        elif token:
+            env["HPC_JOIN_TOKEN"] = token
         proc = subprocess.Popen(
             cmd,
             cwd=str(self.project_root),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=creationflags,
+            env=env,
         )
         return CloudVM(vm_id=vm_id, launched_at=time.time(), process=proc, kind="local_sim")
 
@@ -190,6 +200,11 @@ class BurstController:
                 retired.append(vm_id)
                 self._events.append({"ts": now, "event": "retire", "vm_id": vm_id})
         return retired
+
+    def snapshot_vm_seconds(self, now: Optional[float] = None) -> float:
+        now = time.time() if now is None else now
+        live_seconds = sum(max(0.0, now - vm.launched_at) for vm in self.vms.values())
+        return self.vm_seconds + live_seconds
 
     async def _stop_vm(self, vm: CloudVM) -> None:
         if vm.process and vm.process.poll() is None:

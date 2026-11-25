@@ -16,11 +16,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from master.audit import AuditLog
+from master.auth import resolve_join_token, token_ok
 from master.burst import BurstController
+from master.config_validate import validate_config
+from master.health import HealthServer
 from master.metrics import MetricsCollector, RunMetrics
 from master.scheduler import Job, Scheduler, WorkerInfo
 from master.storage import ObjectStore
-from protocol.messages import MessageType, decode, encode, make
+from protocol.messages import MAX_MESSAGE_BYTES, MessageType, decode, encode, make
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -86,22 +90,57 @@ class MasterServer:
         self.burst = BurstController(cfg, project_root)
         self.host = cfg.get("master", {}).get("host", "0.0.0.0")
         self.port = int(cfg.get("master", {}).get("port", 9100))
+        self.health_port = int(cfg.get("master", {}).get("health_port", 9101))
         self.hb_timeout = float(cfg.get("scheduling", {}).get("heartbeat_timeout_sec", 6.0))
         self.peer_first = bool(cfg.get("scheduling", {}).get("peer_first", True))
+        self.join_token = resolve_join_token(cfg)
+        self.require_token = bool((cfg.get("auth") or {}).get("require_token", False)) or bool(self.join_token)
+        log_dir = Path(cfg.get("logging", {}).get("dir", "data/logs"))
+        self.audit = AuditLog(log_dir / "audit.jsonl")
         self.active_job_id: Optional[str] = None
         self._job_metrics: Dict[str, RunMetrics] = {}
+        self._job_burst_baselines: Dict[str, tuple[int, float]] = {}
         self._leave_latencies: List[float] = []
         self._server: Optional[asyncio.AbstractServer] = None
+        self._health: Optional[HealthServer] = None
         self._lock = asyncio.Lock()
         self.state: Dict[str, Any] = {"running": False}
+        if not self.join_token:
+            print("[master] WARNING: no HPC_JOIN_TOKEN / auth.join_token — open registration (dev only)", flush=True)
+        else:
+            print("[master] join-token auth enabled", flush=True)
+
+    def _job_metrics_for(self, job_id: Optional[str]) -> Optional[RunMetrics]:
+        if not job_id:
+            return None
+        return self._job_metrics.get(job_id)
+
+    def _job_metrics_for_task(self, task_id: str) -> Optional[RunMetrics]:
+        task = self.scheduler.task_index.get(task_id)
+        if not task:
+            return None
+        return self._job_metrics_for(task.job_id)
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
         self.state["running"] = True
+        self._health = HealthServer(self.host, self.health_port, self._health_payload)
+        await self._health.start()
         asyncio.create_task(self._control_loop())
         sockets = self._server.sockets or []
         addr = sockets[0].getsockname() if sockets else (self.host, self.port)
         print(f"[master] listening on {addr[0]}:{addr[1]}", flush=True)
+        self.audit.emit("master_start", host=self.host, port=self.port)
+
+    def _health_payload(self) -> Dict[str, Any]:
+        return {
+            "running": bool(self.state.get("running")),
+            "workers": len(self.scheduler.workers),
+            "active_job_id": self.active_job_id,
+            "auth": bool(self.join_token),
+            "storage": self.store.backend,
+            "burst_mode": self.burst.mode,
+        }
 
     async def serve_forever(self) -> None:
         assert self._server is not None
@@ -110,10 +149,18 @@ class MasterServer:
 
     async def stop(self) -> None:
         self.burst.shutdown_all()
+        if self._health:
+            await self._health.stop()
         if self._server:
             self._server.close()
             await self._server.wait_closed()
         self.state["running"] = False
+        self.audit.emit("master_stop")
+
+    def _operator_authed(self, msg: Dict[str, Any]) -> bool:
+        if not self.require_token:
+            return True
+        return token_ok(msg.get("token"), self.join_token)
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -125,21 +172,31 @@ class MasterServer:
                 line = await reader.readline()
                 if not line:
                     break
-                msg = decode(line)
+                if len(line) > MAX_MESSAGE_BYTES:
+                    writer.write(encode(make(MessageType.ERROR, error="message too large")))
+                    await writer.drain()
+                    break
+                try:
+                    msg = decode(line)
+                except ValueError as exc:
+                    writer.write(encode(make(MessageType.ERROR, error=str(exc))))
+                    await writer.drain()
+                    break
                 if not msg:
                     continue
                 resp = await self._dispatch(msg, writer)
                 if resp is not None:
                     writer.write(encode(resp))
                     await writer.drain()
-                if msg.get("type") == MessageType.REGISTER.value:
-                    worker_id = msg.get("worker_id")
+                if msg.get("type") == MessageType.REGISTER.value and resp and resp.get("ok"):
+                    worker_id = resp.get("worker_id") or msg.get("worker_id")
         except Exception as exc:
             print(f"[master] client error {peer}: {exc}", flush=True)
         finally:
             if worker_id:
                 async with self._lock:
                     self.scheduler.unregister_worker(worker_id)
+                self.audit.emit("worker_disconnect", worker_id=worker_id, peer=str(peer))
             try:
                 writer.close()
                 await writer.wait_closed()
@@ -178,23 +235,40 @@ class MasterServer:
                 self.scheduler.set_paused(msg["worker_id"], False)
                 return make(MessageType.RESUME, ok=True)
             if mtype == MessageType.JOB_SUBMIT.value:
+                if not self._operator_authed(msg):
+                    self.audit.emit("auth_denied", action="JOB_SUBMIT")
+                    return make(MessageType.ERROR, error="unauthorized")
                 return self._on_job_submit(msg)
             if mtype == MessageType.JOB_STATUS.value:
+                if self.require_token and not self._operator_authed(msg):
+                    return make(MessageType.ERROR, error="unauthorized")
                 jid = msg.get("job_id") or self.active_job_id
                 if not jid or jid not in self.scheduler.jobs:
                     return make(MessageType.ERROR, error="no job")
                 return make(MessageType.JOB_STATUS, **self.scheduler.job_progress(jid))
             if mtype == MessageType.FORCE_BURST.value:
+                if not self._operator_authed(msg):
+                    self.audit.emit("auth_denied", action="FORCE_BURST")
+                    return make(MessageType.ERROR, error="unauthorized")
                 self.burst.force_burst = bool(msg.get("enabled", True))
                 return make(MessageType.FORCE_BURST, force_burst=self.burst.force_burst)
             if mtype == MessageType.METRICS.value:
+                if self.require_token and not self._operator_authed(msg):
+                    return make(MessageType.ERROR, error="unauthorized")
                 return make(MessageType.METRICS, burst=self.burst.status(), workers=self._worker_snapshot())
             if mtype == MessageType.SHUTDOWN.value:
+                if not self._operator_authed(msg):
+                    return make(MessageType.ERROR, error="unauthorized")
                 asyncio.create_task(self.stop())
                 return make(MessageType.SHUTDOWN, ok=True)
             return make(MessageType.ERROR, error=f"unknown type {mtype}")
 
     def _on_register(self, msg: Dict[str, Any], writer: asyncio.StreamWriter) -> Dict[str, Any]:
+        if not token_ok(msg.get("token"), self.join_token):
+            self.audit.emit("auth_denied", action="REGISTER", kind=msg.get("kind"))
+            return make(MessageType.ERROR, error="unauthorized: invalid or missing join token")
+        if msg.get("kind", "campus") == "campus" and not bool(msg.get("consented", False)):
+            return make(MessageType.ERROR, error="consent required")
         wid = msg.get("worker_id") or uuid.uuid4().hex[:10]
         info = WorkerInfo(
             worker_id=wid,
@@ -223,6 +297,14 @@ class MasterServer:
             f"max_tasks={self.scheduler._max_concurrent(info)}",
             flush=True,
         )
+        self.audit.emit(
+            "worker_register",
+            worker_id=wid,
+            kind=info.kind,
+            cores=eff,
+            memory_mb=mem,
+            gpus=info.gpu_count,
+        )
         return make(
             MessageType.REGISTER_ACK,
             worker_id=wid,
@@ -241,8 +323,9 @@ class MasterServer:
         job, recovery = self.scheduler.complete_task(tid, result, worker_id=worker_id)
         if job is None:
             return make(MessageType.ERROR, error="stale or unknown task result", task_id=tid)
-        if recovery is not None and self.active_job_id and self.active_job_id in self._job_metrics:
-            self._job_metrics[self.active_job_id].reclaim_recovery_sec += recovery
+        metrics = self._job_metrics_for(job.job_id)
+        if recovery is not None and metrics is not None:
+            metrics.reclaim_recovery_sec += recovery
         uri = self.store.put_json("results", tid, {"task_id": tid, "result": result})
         if job.finished_at:
             self._finalize_job(job)
@@ -251,10 +334,13 @@ class MasterServer:
     def _on_checkpoint(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         tid = msg["task_id"]
         cp = msg.get("checkpoint", {})
+        if tid not in self.scheduler.task_index:
+            return make(MessageType.ERROR, error="stale or unknown task checkpoint", task_id=tid)
         self.scheduler.checkpoint_task(tid, cp)
         uri = self.store.put_json("checkpoints", tid, {"task_id": tid, "checkpoint": cp})
-        if self.active_job_id and self.active_job_id in self._job_metrics:
-            self._job_metrics[self.active_job_id].checkpoint_uris.append(uri)
+        metrics = self._job_metrics_for_task(tid)
+        if metrics is not None:
+            metrics.checkpoint_uris.append(uri)
         return make(MessageType.TASK_CHECKPOINT, ok=True, stored=uri)
 
     def _on_leave(self, msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -263,11 +349,23 @@ class MasterServer:
         reclaimed = self.scheduler.unregister_worker(wid)
         latency_ms = (time.time() - t0) * 1000.0
         self._leave_latencies.append(latency_ms)
-        if self.active_job_id and self.active_job_id in self._job_metrics:
-            m = self._job_metrics[self.active_job_id]
-            m.reclaim_events += 1
+        metrics_targets = []
+        seen_job_ids = set()
+        for task in reclaimed:
+            if task.job_id in seen_job_ids:
+                continue
+            seen_job_ids.add(task.job_id)
+            metrics = self._job_metrics_for(task.job_id)
+            if metrics is not None:
+                metrics_targets.append(metrics)
+        if not metrics_targets:
+            metrics = self._job_metrics_for(self.active_job_id)
+            if metrics is not None:
+                metrics_targets.append(metrics)
+        for metrics in metrics_targets:
+            metrics.reclaim_events += 1
             # leave_latency = owner leave ACK time; end-to-end recovery accrues on re-complete
-            m.leave_latency_ms = latency_ms
+            metrics.leave_latency_ms = latency_ms
         return make(
             MessageType.LEAVE,
             ok=True,
@@ -290,6 +388,10 @@ class MasterServer:
             kernel=kernel,
             n_tasks=len(job.tasks),
             serial_proxy_sec=serial_proxy,
+        )
+        self._job_burst_baselines[job.job_id] = (
+            self.burst.launches,
+            self.burst.snapshot_vm_seconds(),
         )
         print(f"[master] job {job.job_id} kernel={kernel} tasks={len(job.tasks)} policy={policy}", flush=True)
         return make(MessageType.JOB_SUBMIT, ok=True, job_id=job.job_id, tasks=len(job.tasks))
@@ -315,9 +417,12 @@ class MasterServer:
             m.campus_workers,
             sum(1 for w in self.scheduler.workers.values() if w.kind == "campus"),
         )
-        # peak cloud launches during job
-        m.cloud_workers = max(m.cloud_workers, self.burst.launches)
-        m.cloud_vm_seconds = self.burst.snapshot_vm_seconds(job.finished_at or time.time())
+        baseline_launches, baseline_vm_seconds = self._job_burst_baselines.pop(job.job_id, (0, 0.0))
+        m.cloud_workers = max(m.cloud_workers, max(0, self.burst.launches - baseline_launches))
+        m.cloud_vm_seconds = max(
+            m.cloud_vm_seconds,
+            max(0.0, self.burst.snapshot_vm_seconds(job.finished_at or time.time()) - baseline_vm_seconds),
+        )
         m.reclaim_events = max(m.reclaim_events, self.scheduler.reclaim_events)
         if self._leave_latencies:
             m.leave_latency_ms = sum(self._leave_latencies) / len(self._leave_latencies)
@@ -454,6 +559,11 @@ async def main() -> None:
     parser.add_argument("--config", default=str(ROOT / "config" / "default.yaml"))
     args = parser.parse_args()
     cfg = load_config(Path(args.config))
+    errs = validate_config(cfg)
+    if errs:
+        raise SystemExit("config errors: " + "; ".join(errs))
+    if bool((cfg.get("auth") or {}).get("require_token")) and not resolve_join_token(cfg):
+        raise SystemExit("auth.require_token set but HPC_JOIN_TOKEN / auth.join_token missing")
     master = MasterServer(cfg, ROOT)
     await master.start()
     try:

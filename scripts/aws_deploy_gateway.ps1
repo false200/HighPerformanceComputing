@@ -47,9 +47,17 @@ if (-not $GroupId -or $GroupId -eq "None") {
   aws ec2 authorize-security-group-ingress --region $Region --group-id $GroupId --protocol tcp --port 22 --cidr $AllowedCidr | Out-Null
   aws ec2 authorize-security-group-ingress --region $Region --group-id $GroupId --protocol tcp --port 9100 --cidr $AllowedCidr | Out-Null
   aws ec2 authorize-security-group-ingress --region $Region --group-id $GroupId --protocol tcp --port 8080 --cidr $AllowedCidr | Out-Null
+  aws ec2 authorize-security-group-ingress --region $Region --group-id $GroupId --protocol tcp --port 9101 --cidr $AllowedCidr | Out-Null
 }
 Write-Host "Security group: $GroupId"
 
+$JoinToken = if ($env:HPC_JOIN_TOKEN) { $env:HPC_JOIN_TOKEN } else { "" }
+if (-not $JoinToken) {
+  Write-Host "TIP: set `$env:HPC_JOIN_TOKEN before deploy for enterprise auth." -ForegroundColor Yellow
+}
+
+$TokenForBash = $JoinToken -replace "'", "'\\''"
+$HasToken = if ($JoinToken) { "yes" } else { "no" }
 $USERDATA = @"
 #!/bin/bash
 set -euo pipefail
@@ -60,28 +68,28 @@ rm -rf hpc-grid
 git clone "$RepoUrl" hpc-grid
 cd hpc-grid
 python3 -m pip install -r requirements.txt
-mkdir -p bin
+mkdir -p bin data/logs
 g++ -O2 -std=c++17 -fopenmp -Wall kernels/omp_kernels.cpp -o bin/omp_kernels || true
 export PYTHONPATH=/opt/hpc-grid
-# Persist a small advertise hint for burst
-PUBLIC_IP=\$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || true)
-if [ -n "\$PUBLIC_IP" ]; then
-  python3 - <<PY
-import pathlib, re
-p = pathlib.Path("config/default.yaml")
+export HPC_JOIN_TOKEN='$TokenForBash'
+if [ "$HasToken" = "yes" ]; then CFG=config/enterprise.aws.yaml; else CFG=config/default.yaml; fi
+PUBLIC_IP=`$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || true)
+export CFG_PATH="`$CFG"
+export PUBLIC_IP
+python3 <<'PY'
+import os, pathlib, re
+p = pathlib.Path(os.environ.get("CFG_PATH", "config/default.yaml"))
 t = p.read_text()
-if "advertise_host" not in t:
-    t = t.replace("dashboard_port: 8080", "dashboard_port: 8080\n  advertise_host: \"\$PUBLIC_IP\"", 1)
-else:
-    t = re.sub(r"advertise_host:.*", 'advertise_host: "\$PUBLIC_IP"', t)
-if "aws_master_host" in t:
-    t = re.sub(r"aws_master_host:.*", 'aws_master_host: "\$PUBLIC_IP"', t)
+ip = os.environ.get("PUBLIC_IP", "")
+if ip:
+    t = re.sub(r"advertise_host:.*", f'advertise_host: "{ip}"', t)
+    t = re.sub(r"aws_master_host:.*", f'aws_master_host: "{ip}"', t)
+t = re.sub(r'backend:\s*"s3"', 'backend: "local"', t)
 p.write_text(t)
 PY
-fi
-nohup python3 -m master --config /opt/hpc-grid/config/default.yaml >/var/log/hpc-master.log 2>&1 &
+nohup env HPC_JOIN_TOKEN='$TokenForBash' PYTHONPATH=/opt/hpc-grid python3 -m master --config "`$CFG" >/var/log/hpc-master.log 2>&1 &
 nohup python3 dashboard/app.py --master 127.0.0.1:9100 --port 8080 >/var/log/hpc-dash.log 2>&1 &
-echo "HPC gateway started" >> /var/log/hpc-master.log
+echo "HPC gateway started cfg=`$CFG" >> /var/log/hpc-master.log
 "@
 
 $Tmp = [System.IO.Path]::GetTempFileName() + ".sh"
@@ -117,9 +125,13 @@ Write-Host ""
 Write-Host "============================================" -ForegroundColor Green
 Write-Host "  AWS GATEWAY READY (give ~2 min for install)" -ForegroundColor Green
 Write-Host "  Public IP : $PublicIp" -ForegroundColor Green
-Write-Host "  Workers   : Connect.bat → enter $PublicIp" -ForegroundColor Green
+Write-Host "  Workers   : Connect.bat → enter $PublicIp (+ join token if set)" -ForegroundColor Green
 Write-Host "  Submit    : .\scripts\submit_job.ps1 -Master ${PublicIp}:9100" -ForegroundColor Green
+Write-Host "  Health    : http://${PublicIp}:9101/health" -ForegroundColor Green
 Write-Host "  Dashboard : http://${PublicIp}:8080" -ForegroundColor Green
+if ($JoinToken) {
+  Write-Host "  Auth      : HPC_JOIN_TOKEN is configured on the instance" -ForegroundColor Green
+}
 Write-Host "  Stop later: aws ec2 terminate-instances --instance-ids $InstanceId --region $Region" -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Green
 

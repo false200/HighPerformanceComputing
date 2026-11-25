@@ -7,7 +7,8 @@ param(
   [string]$Policy = "campus_only",
   [int]$Chunks = 12,
   [double]$Deadline = 180,
-  [double]$Timeout = 300
+  [double]$Timeout = 300,
+  [string]$Token = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,15 +31,21 @@ if ($Master -eq "127.0.0.1:9100") {
   }
 }
 
+if (-not $Token) { $Token = $env:HPC_JOIN_TOKEN }
+
 Write-Host ""
 Write-Host "Submitting $Kernel job ($Policy, $Chunks chunks) to $Master ..." -ForegroundColor Cyan
-py -3 -m master.client `
-  --master $Master `
-  --kernel $Kernel `
-  --policy $Policy `
-  --chunks $Chunks `
-  --deadline $Deadline `
-  --timeout $Timeout
+$clientArgs = @(
+  "-3", "-m", "master.client",
+  "--master", $Master,
+  "--kernel", $Kernel,
+  "--policy", $Policy,
+  "--chunks", "$Chunks",
+  "--deadline", "$Deadline",
+  "--timeout", "$Timeout"
+)
+if ($Token) { $clientArgs += @("--token", $Token) }
+py @clientArgs
 
 if ($LASTEXITCODE -ne 0) {
   Write-Host "Job failed or timed out (exit $LASTEXITCODE)." -ForegroundColor Red

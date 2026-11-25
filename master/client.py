@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -27,15 +28,21 @@ async def rpc(host: str, port: int, msg: Dict[str, Any], timeout: float = 10.0) 
         await writer.wait_closed()
 
 
+def _token(args: argparse.Namespace) -> str:
+    return (args.token or os.environ.get("HPC_JOIN_TOKEN") or "").strip()
+
+
 async def submit_and_wait(args: argparse.Namespace) -> int:
     host, port_s = args.master.split(":")
     port = int(port_s)
+    tok = _token(args)
     sub = await rpc(host, port, make(
         MessageType.JOB_SUBMIT,
         kernel=args.kernel,
         policy=args.policy,
         chunks=args.chunks,
         deadline_sec=args.deadline,
+        token=tok,
     ))
     if not sub or not sub.get("ok"):
         print("submit failed:", sub)
@@ -43,12 +50,12 @@ async def submit_and_wait(args: argparse.Namespace) -> int:
     job_id = sub["job_id"]
     print(f"submitted job {job_id} tasks={sub.get('tasks')}")
     if args.force_burst:
-        await rpc(host, port, make(MessageType.FORCE_BURST, enabled=True))
+        await rpc(host, port, make(MessageType.FORCE_BURST, enabled=True, token=tok))
         print("force-burst enabled")
 
     t0 = time.time()
     while time.time() - t0 < args.timeout:
-        st = await rpc(host, port, make(MessageType.JOB_STATUS, job_id=job_id))
+        st = await rpc(host, port, make(MessageType.JOB_STATUS, job_id=job_id, token=tok))
         if not st:
             await asyncio.sleep(0.5)
             continue
@@ -70,6 +77,7 @@ def main() -> None:
     p.add_argument("--deadline", type=float, default=120.0)
     p.add_argument("--timeout", type=float, default=180.0)
     p.add_argument("--force-burst", action="store_true")
+    p.add_argument("--token", default="", help="Operator/join token (or HPC_JOIN_TOKEN)")
     args = p.parse_args()
     raise SystemExit(asyncio.run(submit_and_wait(args)))
 

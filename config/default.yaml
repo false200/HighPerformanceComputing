@@ -2,8 +2,13 @@ master:
   host: "0.0.0.0"
   port: 9100
   dashboard_port: 8080
+  health_port: 9101
   # Public DNS/IP when master runs on AWS (workers + burst use this)
   advertise_host: null
+
+auth:
+  require_token: false          # true on AWS / enterprise
+  join_token: null              # prefer env HPC_JOIN_TOKEN
 
 scheduling:
   peer_first: true

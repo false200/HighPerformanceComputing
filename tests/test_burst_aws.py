@@ -71,6 +71,38 @@ def test_aws_placeholder_launch_does_not_consume_slot(monkeypatch):
     assert c.vms == {}
 
 
+def test_maybe_burst_serializes_vm_id_assignment(monkeypatch):
+    c = _ctrl()
+    seen = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_launch(vm_id, host, port):
+        seen.append(vm_id)
+        if len(seen) == 1:
+            started.set()
+            await release.wait()
+        return CloudVM(vm_id=vm_id, launched_at=0.0, process=None, kind="aws", instance_id=vm_id)
+
+    monkeypatch.setattr(c, "_launch_aws", fake_launch)
+
+    async def run_two_launches():
+        first = asyncio.create_task(c.maybe_burst("policy", "127.0.0.1", 9100))
+        second = asyncio.create_task(c.maybe_burst("policy", "127.0.0.1", 9100))
+        await started.wait()
+        assert len(seen) == 1
+        release.set()
+        return await asyncio.gather(first, second)
+
+    vm1, vm2 = asyncio.run(run_two_launches())
+
+    assert vm1 is not None
+    assert vm2 is not None
+    assert vm1.vm_id != vm2.vm_id
+    assert c.launches == 2
+    assert len(c.vms) == 2
+
+
 def test_stop_vm_terminates_aws_instance_id(monkeypatch):
     c = _ctrl()
     calls = []

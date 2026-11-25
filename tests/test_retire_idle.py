@@ -45,3 +45,15 @@ def test_retire_skips_busy_vm():
     retired = asyncio.run(run())
     assert retired == []
     assert "cloud-y" in c.vms
+
+
+def test_snapshot_vm_seconds_includes_live_vms():
+    cfg = {
+        "scheduling": {"cloud_idle_timeout_sec": 0.01, "max_cloud_vms": 2},
+        "burst": {"mode": "local_sim"},
+    }
+    c = BurstController(cfg, Path("."))
+    c.vm_seconds = 5.0
+    c.vms["cloud-z"] = CloudVM(vm_id="cloud-z", launched_at=97.0, process=None)
+
+    assert c.snapshot_vm_seconds(now=100.0) == 8.0
