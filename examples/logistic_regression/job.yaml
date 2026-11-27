@@ -1,0 +1,21 @@
+# User job: logistic regression on exam_pass dataset
+# Submit with: SubmitLogReg.bat   (or scripts/submit_logreg_job.ps1)
+# Platform (AWS gateway) must already be running — this file does NOT deploy EC2.
+
+name: exam_pass_logreg
+kernel: logreg
+policy: campus_only
+chunks: 6
+deadline_sec: 240
+timeout_sec: 300
+
+dataset: examples/logistic_regression/data/exam_pass.csv
+label_col: passed
+n_rows: 1200
+epochs: 40
+lr: 0.08
+
+description: >
+  Binary classification: predict whether a student passed the exam from
+  study hours, attendance, sleep, GPA, assignments, and tutoring.
+  The cluster shards the CSV across campus workers and averages weights.

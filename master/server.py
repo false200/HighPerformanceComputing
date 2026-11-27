@@ -67,23 +67,56 @@ def partition_job(kernel: str, cfg: Dict[str, Any], n_chunks: int) -> List[Dict[
                 "params": {"offset": offset, "count": count, "length": length},
             })
     elif kernel in ("logreg", "linreg"):
-        ml = wl.get(kernel, {}) or wl.get("logreg", {})
-        n_samples = int(ml.get("n_samples", 400))
-        n_features = int(ml.get("n_features", 8))
+        ml = dict(wl.get(kernel, {}) or wl.get("logreg", {}) or {})
+        # Optional per-submit overrides (from job YAML / JOB_SUBMIT)
+        overrides = cfg.get("_job_overrides") or {}
+        ml.update({k: v for k, v in overrides.items() if v is not None})
         epochs = int(ml.get("epochs", 25))
         lr = float(ml.get("lr", 0.05))
-        for i in range(n_chunks):
-            specs.append({
-                "weight": n_samples,
-                "params": {
+        dataset = str(ml.get("dataset") or "").strip()
+        label_col = ml.get("label_col")
+        if dataset:
+            total_rows = int(ml.get("n_rows") or 0)
+            if total_rows <= 0:
+                try:
+                    from kernels.ml_train import count_csv_rows
+
+                    total_rows = count_csv_rows(dataset)
+                except Exception:
+                    total_rows = int(ml.get("n_samples", 400)) * n_chunks
+            each = max(1, math.ceil(total_rows / n_chunks))
+            for i in range(n_chunks):
+                offset = i * each
+                if offset >= total_rows:
+                    break
+                count = min(each, total_rows - offset)
+                params = {
                     "shard": i,
-                    "seed": 1000 + i * 17,
-                    "n_samples": n_samples,
-                    "n_features": n_features,
+                    "dataset": dataset,
+                    "offset": offset,
+                    "count": count,
+                    "n_samples": count,
                     "epochs": epochs,
                     "lr": lr,
-                },
-            })
+                }
+                if label_col:
+                    params["label_col"] = label_col
+                specs.append({"weight": count, "params": params})
+        else:
+            n_samples = int(ml.get("n_samples", 400))
+            n_features = int(ml.get("n_features", 8))
+            for i in range(n_chunks):
+                specs.append({
+                    "weight": n_samples,
+                    "params": {
+                        "shard": i,
+                        "seed": 1000 + i * 17,
+                        "n_samples": n_samples,
+                        "n_features": n_features,
+                        "epochs": epochs,
+                        "lr": lr,
+                    },
+                })
     else:  # irregular
         tasks = int(wl.get("irregular", {}).get("tasks", 24))
         max_work = int(wl.get("irregular", {}).get("max_work", 50000))
@@ -417,7 +450,20 @@ class MasterServer:
         deadline = float(msg.get("deadline_sec", sched_cfg.get("default_deadline_sec", 120)))
         max_retries = int(msg.get("max_retries", sched_cfg.get("max_retries", 3)))
         placement = str(msg.get("placement", sched_cfg.get("placement", "spread")))
-        specs = partition_job(kernel, self.cfg, n_chunks)
+        # Shallow copy so per-job dataset/epochs overrides do not mutate process config
+        cfg = dict(self.cfg)
+        cfg["workloads"] = dict(self.cfg.get("workloads") or {})
+        overrides = {
+            "dataset": msg.get("dataset"),
+            "label_col": msg.get("label_col"),
+            "epochs": msg.get("epochs"),
+            "lr": msg.get("lr"),
+            "n_rows": msg.get("n_rows"),
+            "n_samples": msg.get("n_samples"),
+            "n_features": msg.get("n_features"),
+        }
+        cfg["_job_overrides"] = overrides
+        specs = partition_job(kernel, cfg, n_chunks)
         job = self.scheduler.create_job(
             kernel,
             specs,

@@ -25,6 +25,30 @@ def test_partition_logreg():
     assert specs[3]["params"]["n_features"] == 3
 
 
+def test_partition_logreg_dataset(tmp_path):
+    csv_path = tmp_path / "tiny.csv"
+    csv_path.write_text(
+        "a,b,label\n1,2,0\n3,4,1\n5,6,0\n7,8,1\n",
+        encoding="utf-8",
+    )
+    # path relative won't resolve under ROOT; pass absolute via overrides + monkey by using n_rows
+    cfg = {
+        "workloads": {"logreg": {}},
+        "_job_overrides": {
+            "dataset": str(csv_path),
+            "label_col": "label",
+            "n_rows": 4,
+            "epochs": 5,
+            "lr": 0.1,
+        },
+    }
+    specs = partition_job("logreg", cfg, 2)
+    assert len(specs) == 2
+    assert specs[0]["params"]["offset"] == 0
+    assert specs[0]["params"]["count"] == 2
+    assert specs[1]["params"]["offset"] == 2
+
+
 def test_average_ml_model():
     job = Job(job_id="j", kernel="logreg", policy="campus_only", deadline_ts=0)
     for i, (w, b, acc) in enumerate([([1.0, 2.0], 0.5, 0.8), ([3.0, 4.0], 1.5, 0.9)]):

@@ -7,11 +7,15 @@ The master averages shard weights (parameter-server style) into one model.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import random
 import time
-from typing import Any, Dict, List, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _sigmoid(z: float) -> float:
@@ -122,6 +126,49 @@ def train_linreg(
     }
 
 
+def _resolve_dataset(path_str: str) -> Path:
+    p = Path(path_str)
+    if not p.is_absolute():
+        p = ROOT / p
+    return p
+
+
+def load_csv_shard(
+    dataset: str,
+    offset: int,
+    count: int,
+    label_col: Optional[str] = None,
+) -> Tuple[List[List[float]], List[float], List[str]]:
+    path = _resolve_dataset(dataset)
+    if not path.exists():
+        raise FileNotFoundError(f"dataset not found: {path}")
+    with path.open(encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            raise ValueError(f"dataset has no header: {path}")
+        fields = list(reader.fieldnames)
+        y_name = label_col or fields[-1]
+        x_names = [c for c in fields if c != y_name]
+        rows = list(reader)
+    end = min(len(rows), offset + count)
+    start = min(max(0, offset), end)
+    slice_rows = rows[start:end]
+    X: List[List[float]] = []
+    y: List[float] = []
+    for row in slice_rows:
+        X.append([float(row[c]) for c in x_names])
+        y.append(float(row[y_name]))
+    return X, y, x_names
+
+
+def count_csv_rows(dataset: str) -> int:
+    path = _resolve_dataset(dataset)
+    with path.open(encoding="utf-8", newline="") as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        return sum(1 for _ in reader)
+
+
 def run(params: Dict[str, Any]) -> Dict[str, Any]:
     kind = str(params.get("kernel") or params.get("mode") or "logreg")
     seed = int(params.get("seed", 1))
@@ -130,8 +177,20 @@ def run(params: Dict[str, Any]) -> Dict[str, Any]:
     epochs = int(params.get("epochs", 25))
     lr = float(params.get("lr", 0.05))
     threads = int(params.get("threads") or 1)
+    dataset = str(params.get("dataset") or "").strip()
     t0 = time.perf_counter()
-    X, y = _make_shard(seed, n_samples, n_features, kind)
+    feature_names: List[str] = []
+    if dataset:
+        offset = int(params.get("offset", 0))
+        count = int(params.get("count", n_samples))
+        label_col = params.get("label_col")
+        X, y, feature_names = load_csv_shard(
+            dataset, offset, count, label_col=str(label_col) if label_col else None
+        )
+        if not X:
+            raise RuntimeError(f"empty shard offset={offset} count={count} dataset={dataset}")
+    else:
+        X, y = _make_shard(seed, n_samples, n_features, kind)
     if kind == "linreg":
         out = train_linreg(X, y, epochs, lr, threads)
     else:
@@ -139,6 +198,12 @@ def run(params: Dict[str, Any]) -> Dict[str, Any]:
     out["elapsed_ms"] = (time.perf_counter() - t0) * 1000.0
     out["seed"] = seed
     out["shard"] = int(params.get("shard", 0))
+    if dataset:
+        out["dataset"] = dataset
+        out["offset"] = int(params.get("offset", 0))
+        out["count"] = len(X)
+        if feature_names:
+            out["features"] = feature_names
     return out
 
 
