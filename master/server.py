@@ -66,6 +66,24 @@ def partition_job(kernel: str, cfg: Dict[str, Any], n_chunks: int) -> List[Dict[
                 "weight": count,
                 "params": {"offset": offset, "count": count, "length": length},
             })
+    elif kernel in ("logreg", "linreg"):
+        ml = wl.get(kernel, {}) or wl.get("logreg", {})
+        n_samples = int(ml.get("n_samples", 400))
+        n_features = int(ml.get("n_features", 8))
+        epochs = int(ml.get("epochs", 25))
+        lr = float(ml.get("lr", 0.05))
+        for i in range(n_chunks):
+            specs.append({
+                "weight": n_samples,
+                "params": {
+                    "shard": i,
+                    "seed": 1000 + i * 17,
+                    "n_samples": n_samples,
+                    "n_features": n_features,
+                    "epochs": epochs,
+                    "lr": lr,
+                },
+            })
     else:  # irregular
         tasks = int(wl.get("irregular", {}).get("tasks", 24))
         max_work = int(wl.get("irregular", {}).get("max_work", 50000))
@@ -455,13 +473,23 @@ class MasterServer:
         if self._leave_latencies:
             m.leave_latency_ms = sum(self._leave_latencies) / len(self._leave_latencies)
         path = self.metrics.record(m)
-        self.store.put_json("results", f"job_{job.job_id}", {
+        payload = {
             "job_id": job.job_id,
             "checksum": job.checksum,
             "progress": self.scheduler.job_progress(job.job_id),
             "metrics_path": str(path),
-        })
-        print(f"[master] job {job.job_id} DONE checksum={job.checksum:.6f} wall={m.wall_time_sec:.3f}s", flush=True)
+        }
+        if job.model:
+            payload["model"] = job.model
+        self.store.put_json("results", f"job_{job.job_id}", payload)
+        if job.model:
+            print(
+                f"[master] job {job.job_id} DONE ML model shards={job.model.get('shards')} "
+                f"bias={job.model.get('bias'):.4f} checksum={job.checksum:.6f} wall={m.wall_time_sec:.3f}s",
+                flush=True,
+            )
+        else:
+            print(f"[master] job {job.job_id} DONE checksum={job.checksum:.6f} wall={m.wall_time_sec:.3f}s", flush=True)
 
     def _worker_snapshot(self) -> List[Dict[str, Any]]:
         now = time.time()

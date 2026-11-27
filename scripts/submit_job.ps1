@@ -1,7 +1,7 @@
 ﻿# Run on the HOST laptop (while master is already running).
 param(
   [string]$Master = "127.0.0.1:9100",
-  [ValidateSet("heat2d", "batch", "irregular")]
+  [ValidateSet("heat2d", "batch", "irregular", "logreg", "linreg")]
   [string]$Kernel = "heat2d",
   [ValidateSet("campus_only", "hybrid", "cloud_only")]
   [string]$Policy = "campus_only",

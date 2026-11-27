@@ -73,12 +73,24 @@ def memory_mb() -> int:
     return 4096
 
 
+def run_ml_kernel(kernel: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Sharded logistic / linear regression (Python stdlib trainer)."""
+    from kernels.ml_train import run as ml_run
+
+    payload = dict(params)
+    payload["kernel"] = kernel
+    return ml_run(payload)
+
+
 def run_kernel(
     kernel: str,
     params: Dict[str, Any],
     proc_setter=None,
     proc_clearer=None,
 ) -> Dict[str, Any]:
+    if kernel in ("logreg", "linreg"):
+        return run_ml_kernel(kernel, params)
+
     binary = find_kernel_binary()
     threads = int(params.get("threads") or 0)
     cmd = [str(binary), kernel]

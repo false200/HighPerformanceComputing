@@ -71,7 +71,11 @@ async def submit_and_wait(args: argparse.Namespace) -> int:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--master", default="127.0.0.1:9100")
-    p.add_argument("--kernel", default="heat2d", choices=["heat2d", "batch", "irregular"])
+    p.add_argument(
+        "--kernel",
+        default="heat2d",
+        choices=["heat2d", "batch", "irregular", "logreg", "linreg"],
+    )
     p.add_argument("--policy", default="hybrid", choices=["hybrid", "campus_only", "cloud_only"])
     p.add_argument("--chunks", type=int, default=8)
     p.add_argument("--deadline", type=float, default=120.0)

@@ -74,6 +74,7 @@ class Job:
     finished_at: Optional[float] = None
     checksum: float = 0.0
     placement: str = "spread"  # spread | pack (Ray placement-group spirit)
+    model: Optional[Dict[str, Any]] = None  # averaged ML weights when applicable
 
 
 class Scheduler:
@@ -361,6 +362,8 @@ class Scheduler:
             job.checksum = sum(
                 float(t.result.get("checksum", 0.0)) for t in job.tasks if t.result
             )
+            if job.kernel in ("logreg", "linreg"):
+                job.model = average_ml_model(job)
         return job, recovery, ref
 
     def checkpoint_task(
@@ -459,6 +462,7 @@ class Scheduler:
             "deadline_ts": job.deadline_ts,
             "placement": job.placement,
             "gcs": self.gcs.snapshot(),
+            "model": job.model,
         }
 
     def projected_finish(self, job_id: str) -> float:
@@ -483,3 +487,28 @@ class Scheduler:
 
     def cloud_peer_count(self) -> int:
         return sum(1 for w in self.workers.values() if w.kind == "cloud" and not w.paused)
+
+
+def average_ml_model(job: Job) -> Optional[Dict[str, Any]]:
+    """Average per-shard weights (simple parameter-server merge)."""
+    rows = [t.result for t in job.tasks if t.result and "weights" in t.result]
+    if not rows:
+        return None
+    n = len(rows[0]["weights"])
+    avg_w = [
+        sum(float(r["weights"][j]) for r in rows) / len(rows)
+        for j in range(n)
+    ]
+    avg_b = sum(float(r.get("bias", 0.0)) for r in rows) / len(rows)
+    out: Dict[str, Any] = {
+        "kernel": job.kernel,
+        "weights": avg_w,
+        "bias": avg_b,
+        "shards": len(rows),
+    }
+    if job.kernel == "logreg":
+        out["mean_train_acc"] = sum(float(r.get("train_acc", 0.0)) for r in rows) / len(rows)
+        out["mean_loss"] = sum(float(r.get("loss", 0.0)) for r in rows) / len(rows)
+    else:
+        out["mean_mse"] = sum(float(r.get("mse", 0.0)) for r in rows) / len(rows)
+    return out
