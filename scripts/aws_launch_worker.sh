@@ -15,6 +15,7 @@ fi
 USERDATA=$(cat <<EOF
 #!/bin/bash
 cd /opt/hpc-grid || exit 1
+export PYTHONPATH=/opt/hpc-grid/backend
 python3 -m worker --master ${MASTER_HOST}:${MASTER_PORT} --kind cloud --worker-id ${WORKER_ID} --auto-consent
 EOF
 )

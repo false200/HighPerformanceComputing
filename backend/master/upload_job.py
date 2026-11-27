@@ -15,9 +15,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+ROOT = BACKEND_ROOT.parent  # project root (config/, key/, examples/)
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 from protocol.messages import MessageType, decode, encode, make
 
@@ -137,8 +138,15 @@ async def upload_and_run(args: argparse.Namespace) -> int:
             ),
         )
         if not sub or not sub.get("ok"):
-            print("submit failed:", sub)
-            return 1
+            err = (sub or {}).get("error") or "submit failed"
+            if "no workers" in str(err).lower():
+                print("\n*** no workers connected ***", flush=True)
+                print("Ask a friend to run Worker.bat, then submit again.\n", flush=True)
+            else:
+                print(f"submit failed: {err}", flush=True)
+                if sub:
+                    print(sub, flush=True)
+            return 3
 
         job_id = sub.get("job_id")
         if sub.get("queued") and not job_id:

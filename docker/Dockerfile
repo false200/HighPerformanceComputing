@@ -9,9 +9,10 @@ COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 COPY . .
 
-RUN g++ -O2 -std=c++17 -fopenmp -Wall kernels/omp_kernels.cpp -o bin/omp_kernels \
+RUN mkdir -p bin \
+ && g++ -O2 -std=c++17 -fopenmp -Wall backend/kernels/omp_kernels.cpp -o bin/omp_kernels \
  && chmod +x bin/omp_kernels
 
-ENV PYTHONPATH=/opt/hpc-grid
+ENV PYTHONPATH=/opt/hpc-grid/backend
 ENTRYPOINT ["python3", "-m", "worker"]
 CMD ["--master", "127.0.0.1:9100", "--kind", "cloud", "--auto-consent"]

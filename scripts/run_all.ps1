@@ -10,7 +10,7 @@ Write-Host "=== 2/5 Install Python deps ==="
 py -3 -m pip install -r "$Root\requirements.txt" -q
 
 Write-Host "=== 3/5 Unit + integration tests ==="
-$env:PYTHONPATH = $Root
+$env:PYTHONPATH = Join-Path $Root "backend"
 py -3 -m pytest "$Root\tests" -q --tb=short
 if ($LASTEXITCODE -ne 0) { throw "tests failed" }
 

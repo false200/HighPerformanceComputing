@@ -3,8 +3,8 @@
 You are a **job submitter**, not a worker and not a deployer.
 
 1. Gateway already running on AWS (`DeployGateway` once).
-2. Workers already joined (`Connect.bat`).
-3. You upload this package; AWS shards the CSV, workers run *your* `train.py`, master merges shard outputs.
+2. Workers already joined (`Worker.bat`).
+3. You upload this package (`User.bat` or CLI); AWS shards the CSV, peers run *your* `train.py`, coordinator merges shard outputs.
 
 ## Files
 
@@ -18,7 +18,7 @@ You are a **job submitter**, not a worker and not a deployer.
 ## Submit
 
 ```powershell
-$env:PYTHONPATH = (Get-Location).Path
+$env:PYTHONPATH = Join-Path (Get-Location) "backend"
 $env:HPC_JOIN_TOKEN = (Get-Content .\key\join_token.txt -Raw).Trim()
 py -3 -m master.upload_job `
   --master "GATEWAY_IP:9100" `

@@ -16,6 +16,7 @@ if (-not $Ami -or $Ami -like "*PLACEHOLDER*") {
 $USERDATA = @"
 #!/bin/bash
 cd /opt/hpc-grid || exit 1
+export PYTHONPATH=/opt/hpc-grid/backend
 python3 -m worker --master ${MasterHost}:${MasterPort} --kind cloud --worker-id ${WorkerId} --auto-consent
 "@
 $UserDataB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($USERDATA))

@@ -15,7 +15,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$env:PYTHONPATH = $Root
+$env:PYTHONPATH = Join-Path $Root "backend"
 $ProfilePath = Join-Path $Root "config\worker_local.yaml"
 
 function Read-IntDefault([string]$Prompt, [int]$Default) {

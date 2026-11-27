@@ -24,7 +24,7 @@ This builds OpenMP kernels, installs deps, runs pytest, executes a hybrid demo, 
 ```powershell
 .\scripts\build_kernels.ps1
 py -3 -m pip install -r requirements.txt
-$env:PYTHONPATH = (Get-Location)
+$env:PYTHONPATH = Join-Path (Get-Location) "backend"
 py -3 -m master
 # other terminals:
 py -3 -m worker --master 127.0.0.1:9100 --auto-consent

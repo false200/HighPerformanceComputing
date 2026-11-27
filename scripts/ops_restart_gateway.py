@@ -30,7 +30,7 @@ def main() -> None:
 
     out = subprocess.check_output(["ps", "-eo", "pid,cmd"], text=True)
     for line in out.splitlines():
-        if "python3" in line and ("-m master" in line or "dashboard/app.py" in line):
+        if "python3" in line and ("-m master" in line or "dashboard.app" in line or "dashboard/app.py" in line):
             pid = int(line.split()[0])
             print("kill", pid)
             subprocess.call(["sudo", "kill", str(pid)])
@@ -38,7 +38,7 @@ def main() -> None:
 
     log_m = open("/tmp/hpc-master.log", "a")
     log_d = open("/tmp/hpc-dash.log", "a")
-    base = ["sudo", "-E", "env", "PYTHONPATH=/opt/hpc-grid", f"HPC_JOIN_TOKEN={token}"]
+    base = ["sudo", "-E", "env", "PYTHONPATH=/opt/hpc-grid/backend", f"HPC_JOIN_TOKEN={token}"]
     subprocess.Popen(
         base + ["python3", "-m", "master", "--config", "config/enterprise.aws.yaml"],
         stdout=log_m,
@@ -49,7 +49,8 @@ def main() -> None:
         base
         + [
             "python3",
-            "dashboard/app.py",
+            "-m",
+            "dashboard.app",
             "--master",
             "127.0.0.1:9100",
             "--port",

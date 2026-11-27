@@ -19,7 +19,7 @@ foreach ($c in $GppCandidates) {
 }
 if (-not $Gpp) { throw "g++ with OpenMP not found" }
 
-$Src = Join-Path $Root "kernels\omp_kernels.cpp"
+$Src = Join-Path $Root "backend\kernels\omp_kernels.cpp"
 $Out = Join-Path $Bin "omp_kernels.exe"
 Write-Host "Compiling OpenMP kernels with $Gpp"
 & $Gpp -O2 -std=c++17 -fopenmp -Wall -Wextra $Src -o $Out

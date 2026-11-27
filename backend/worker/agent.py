@@ -6,6 +6,7 @@ import csv
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import threading
@@ -14,9 +15,10 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+ROOT = BACKEND_ROOT.parent  # project root (config/, key/, examples/)
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 from protocol.messages import MessageType, decode, encode, make
 from worker.consent import prompt_consent
@@ -159,10 +161,22 @@ def run_kernel(
     return json.loads(lines[-1])
 
 
+def _worker_id_from_args(args: argparse.Namespace) -> str:
+    """Prefer a human name (Aejaz, Divyesh, …) over campus-<uuid> when provided."""
+    if getattr(args, "worker_id", None):
+        return str(args.worker_id)
+    name = (getattr(args, "name", None) or "").strip()
+    if name and name.lower() not in ("worker", "campus", "cloud"):
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-_")[:40]
+        if safe:
+            return safe
+    return f"{args.kind}-{uuid.uuid4().hex[:8]}"
+
+
 class WorkerAgent:
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        self.worker_id = args.worker_id or f"{args.kind}-{uuid.uuid4().hex[:8]}"
+        self.worker_id = _worker_id_from_args(args)
         self.paused = False
         self.leaving = False
         self.current_task: Optional[str] = None

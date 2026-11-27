@@ -50,7 +50,7 @@ def test_end_to_end_campus_job(ensure_binary, tmp_path):
     cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
     env = {
         **dict(**{k: v for k, v in __import__("os").environ.items()}),
-        "PYTHONPATH": str(ROOT),
+        "PYTHONPATH": str(ROOT / "backend"),
         "HPC_ALLOW_TEST_QUEUE": "1",
     }
     master = subprocess.Popen(

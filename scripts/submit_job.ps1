@@ -16,7 +16,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$env:PYTHONPATH = $Root
+$env:PYTHONPATH = Join-Path $Root "backend"
 
 # If Master left default and an AWS gateway IP was saved, use it
 if ($Master -eq "127.0.0.1:9100") {

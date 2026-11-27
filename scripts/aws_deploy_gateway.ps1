@@ -77,8 +77,8 @@ git clone "$RepoUrl" hpc-grid
 cd hpc-grid
 python3 -m pip install -r requirements.txt
 mkdir -p bin data/logs
-g++ -O2 -std=c++17 -fopenmp -Wall kernels/omp_kernels.cpp -o bin/omp_kernels || true
-export PYTHONPATH=/opt/hpc-grid
+g++ -O2 -std=c++17 -fopenmp -Wall backend/kernels/omp_kernels.cpp -o bin/omp_kernels || true
+export PYTHONPATH=/opt/hpc-grid/backend
 export HPC_JOIN_TOKEN='$TokenForBash'
 if [ "$HasToken" = "yes" ]; then CFG=config/enterprise.aws.yaml; else CFG=config/default.yaml; fi
 PUBLIC_IP=`$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || true)
@@ -94,8 +94,8 @@ if ip:
     t = re.sub(r"aws_master_host:.*", f'aws_master_host: "{ip}"', t)
 p.write_text(t)
 PY
-nohup env HPC_JOIN_TOKEN='$TokenForBash' PYTHONPATH=/opt/hpc-grid python3 -m master --config "`$CFG" >/var/log/hpc-master.log 2>&1 &
-nohup env HPC_JOIN_TOKEN='$TokenForBash' PYTHONPATH=/opt/hpc-grid python3 dashboard/app.py --master 127.0.0.1:9100 --port 8080 >/var/log/hpc-dash.log 2>&1 &
+nohup env HPC_JOIN_TOKEN='$TokenForBash' PYTHONPATH=/opt/hpc-grid/backend python3 -m master --config "`$CFG" >/var/log/hpc-master.log 2>&1 &
+nohup env HPC_JOIN_TOKEN='$TokenForBash' PYTHONPATH=/opt/hpc-grid/backend python3 -m dashboard.app --master 127.0.0.1:9100 --port 8080 >/var/log/hpc-dash.log 2>&1 &
 echo "HPC gateway started cfg=`$CFG rabbitmq=docker" >> /var/log/hpc-master.log
 "@
 
@@ -132,10 +132,10 @@ Write-Host ""
 Write-Host "============================================" -ForegroundColor Green
 Write-Host "  AWS GATEWAY READY (give ~2 min for install)" -ForegroundColor Green
 Write-Host "  Public IP : $PublicIp" -ForegroundColor Green
-Write-Host "  Workers   : Connect.bat → enter $PublicIp (+ join token if set)" -ForegroundColor Green
-Write-Host "  Submit    : .\scripts\submit_job.ps1 -Master ${PublicIp}:9100" -ForegroundColor Green
+Write-Host "  Workers   : Worker.bat → $PublicIp (+ join token)" -ForegroundColor Green
+Write-Host "  Users     : User.bat  → same token (train.py + CSV)" -ForegroundColor Green
 Write-Host "  Health    : http://${PublicIp}:9101/health" -ForegroundColor Green
-Write-Host "  Dashboard : http://${PublicIp}:8080" -ForegroundColor Green
+Write-Host "  Console   : http://${PublicIp}:8080" -ForegroundColor Green
 if ($JoinToken) {
   Write-Host "  Auth      : HPC_JOIN_TOKEN is configured on the instance" -ForegroundColor Green
 }

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Lattice</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Familjen+Grotesk:wght@500;600;700&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/static/css/console.css"/>
+</head>
+<body>
+  <a class="skip" href="#stage">Skip to fabric map</a>
+  <div class="shell">
+    <header class="mast">
+      <div class="mast-brand">
+        <p class="wordmark">Lattice</p>
+        <p class="tag">Campus fabric desk</p>
+      </div>
+      <dl class="ticker" aria-label="Live fabric counters">
+        <div><dt>peers</dt><dd id="p-workers">—</dd></div>
+        <div><dt>users</dt><dd id="p-users">—</dd></div>
+        <div><dt>local</dt><dd id="p-campus">—</dd></div>
+        <div><dt>remote</dt><dd id="p-cloud">—</dd></div>
+        <div><dt>tasks</dt><dd id="p-queue">—</dd></div>
+        <div><dt>intake</dt><dd id="p-intake">—</dd></div>
+        <div><dt>sync</dt><dd id="p-ago">—</dd></div>
+      </dl>
+    </header>
+
+    <main id="stage" class="stage" aria-label="Fabric topology">
+      <canvas id="topo" role="img" aria-label="Live node map. Drag nodes to rearrange."></canvas>
+      <p class="legend" id="legend">
+        <span class="swatch peer"></span> peer
+        <span class="swatch user"></span> user
+        <span class="swatch live"></span> active hop
+      </p>
+    </main>
+
+    <aside class="rail" aria-label="Instrument rail">
+      <section class="panel" aria-labelledby="h-coord">
+        <h2 id="h-coord">Coordinator</h2>
+        <dl class="board">
+          <div><dt>waiting</dt><dd id="g-pending">0</dd></div>
+          <div><dt>running</dt><dd id="g-assigned">0</dd></div>
+          <div><dt>jobs</dt><dd id="g-jobs">0</dd></div>
+          <div><dt>intake</dt><dd id="g-intake">0</dd></div>
+          <div><dt>auth</dt><dd id="g-auth">—</dd></div>
+          <div><dt>overflow</dt><dd id="g-burst">—</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel" aria-labelledby="h-users">
+        <h2 id="h-users">Users</h2>
+        <ul class="roster" id="ulist" role="list">
+          <li class="empty">No submitters online. Run <kbd>User.bat</kbd> to appear here.</li>
+        </ul>
+      </section>
+
+      <section class="panel" aria-labelledby="h-peers">
+        <h2 id="h-peers">Peers</h2>
+        <ul class="roster" id="wlist" role="list">
+          <li class="empty">No donated machines. Run <kbd>Worker.bat</kbd> to join.</li>
+        </ul>
+      </section>
+
+      <section class="panel" aria-labelledby="h-jobs">
+        <h2 id="h-jobs">Jobs</h2>
+        <div id="jobs" class="jobs">
+          <p class="empty">Idle. Submits land here once a peer is connected.</p>
+        </div>
+      </section>
+
+      <section class="panel fault" id="errbox" hidden>
+        <h2>Link fault</h2>
+        <p class="err" id="err" role="alert"></p>
+      </section>
+    </aside>
+  </div>
+  <script src="/static/js/console.js"></script>
+</body>
+</html>

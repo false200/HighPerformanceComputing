@@ -12,9 +12,10 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+ROOT = BACKEND_ROOT.parent  # project root (config/, key/, examples/)
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 from master.audit import AuditLog
 from master.auth import resolve_join_token, token_ok
@@ -389,6 +390,7 @@ class MasterServer:
             return make(MessageType.ERROR, error="unauthorized: invalid or missing join token")
         if msg.get("kind", "campus") == "campus" and not bool(msg.get("consented", False)):
             return make(MessageType.ERROR, error="consent required")
+        display = str(msg.get("name") or "").strip()
         wid = msg.get("worker_id") or uuid.uuid4().hex[:10]
         info = WorkerInfo(
             worker_id=wid,
@@ -396,6 +398,7 @@ class MasterServer:
             cores=int(msg.get("cores", 1)),
             memory_mb=int(msg.get("memory_mb", 1024)),
             os_name=str(msg.get("os", "unknown")),
+            name=display or wid,
             cpu_cap_threads=int(msg.get("cpu_cap_threads", 0)),
             memory_cap_mb=int(msg.get("memory_cap_mb", 0) or 0),
             gpu_count=int(msg.get("gpu_count", 0) or 0),
@@ -411,8 +414,9 @@ class MasterServer:
         self.scheduler.register_worker(info)
         eff = self.scheduler._effective_cores(info)
         mem = self.scheduler.effective_memory_mb(info)
+        label = f"{info.name} " if info.name and info.name != wid else ""
         print(
-            f"[master] registered {info.kind} worker {wid} "
+            f"[master] registered {info.kind} worker {label}{wid} "
             f"cpu={eff}/{info.cores} ram={mem}MB gpus={info.gpu_count} "
             f"max_tasks={self.scheduler._max_concurrent(info)}",
             flush=True,
@@ -563,6 +567,18 @@ class MasterServer:
         user_id = msg.get("user_id")
         if user_id:
             self.users.heartbeat(str(user_id))
+        # Never accept / queue work with an empty peer pool — user.bat must fail fast.
+        if not self.scheduler.workers:
+            if user_id and user_id in self.users.users:
+                self.users.users[str(user_id)].status = "error"
+            self.audit.emit("job_rejected", reason="no_workers", user_id=user_id)
+            print("[master] reject JOB_SUBMIT: no workers connected", flush=True)
+            return make(
+                MessageType.JOB_SUBMIT,
+                ok=False,
+                error="no workers connected",
+                queued=False,
+            )
         running = self.scheduler.running_job_count()
         if running >= self.job_queue.max_running_jobs:
             queued = self.job_queue.enqueue(dict(msg), user_id=str(user_id) if user_id else None)
@@ -661,6 +677,8 @@ class MasterServer:
 
     def _drain_intake(self) -> None:
         """Pull waiting jobs when running capacity frees up."""
+        if not self.scheduler.workers:
+            return  # do not promote intake → waiting tasks with zero peers
         while self.scheduler.running_job_count() < self.job_queue.max_running_jobs:
             item = self.job_queue.dequeue()
             if item is None:
@@ -733,6 +751,7 @@ class MasterServer:
             ]
             out.append({
                 "worker_id": w.worker_id,
+                "name": w.name or w.worker_id,
                 "kind": w.kind,
                 "cores": w.cores,
                 "effective_threads": self.scheduler._effective_cores(w),

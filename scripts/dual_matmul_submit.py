@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+BACKEND = ROOT / "backend"
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
 
 from protocol.messages import MessageType, decode, encode, make
 
@@ -41,13 +42,21 @@ async def run_one(
     dataset: Path,
     chunks: int,
     label: str,
+    *,
+    reuse_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     t_wall0 = time.time()
-    hello = await rpc(host, port, make(MessageType.USER_HELLO, token=token, name=user_name))
-    if not hello or not hello.get("ok"):
-        return {"user": user_name, "error": f"hello failed: {hello}"}
-    uid = str(hello["user_id"])
-    print(f"[{label}] online {uid}", flush=True)
+    stay = bool(reuse_user_id)
+    if reuse_user_id:
+        uid = str(reuse_user_id)
+        await rpc(host, port, make(MessageType.USER_HEARTBEAT, token=token, user_id=uid))
+        print(f"[{label}] using existing session {uid}", flush=True)
+    else:
+        hello = await rpc(host, port, make(MessageType.USER_HELLO, token=token, name=user_name))
+        if not hello or not hello.get("ok"):
+            return {"user": user_name, "error": f"hello failed: {hello}"}
+        uid = str(hello["user_id"])
+        print(f"[{label}] online {uid}", flush=True)
 
     files = {
         "A.csv": dataset.read_text(encoding="utf-8"),
@@ -65,7 +74,8 @@ async def run_one(
         ),
     )
     if not put or not put.get("ok"):
-        await rpc(host, port, make(MessageType.USER_BYE, token=token, user_id=uid))
+        if not stay:
+            await rpc(host, port, make(MessageType.USER_BYE, token=token, user_id=uid))
         return {"user": user_name, "error": f"package failed: {put}"}
     package_id = put["package_id"]
     print(f"[{label}] package {package_id} ({train.name})", flush=True)
@@ -91,7 +101,8 @@ async def run_one(
         ),
     )
     if not sub or not sub.get("ok"):
-        await rpc(host, port, make(MessageType.USER_BYE, token=token, user_id=uid))
+        if not stay:
+            await rpc(host, port, make(MessageType.USER_BYE, token=token, user_id=uid))
         return {"user": user_name, "error": f"submit failed: {sub}"}
 
     queued = bool(sub.get("queued"))
@@ -146,11 +157,14 @@ async def run_one(
     else:
         result["error"] = "timeout"
 
-    try:
-        await rpc(host, port, make(MessageType.USER_BYE, token=token, user_id=uid))
-        print(f"[{label}] logout", flush=True)
-    except Exception as exc:
-        print(f"[{label}] logout failed: {exc}", flush=True)
+    if not stay:
+        try:
+            await rpc(host, port, make(MessageType.USER_BYE, token=token, user_id=uid))
+            print(f"[{label}] logout", flush=True)
+        except Exception as exc:
+            print(f"[{label}] logout failed: {exc}", flush=True)
+    else:
+        print(f"[{label}] session kept online", flush=True)
     return result
 
 
@@ -187,15 +201,35 @@ async def snapshot_loop(host: str, port: int, token: str, stop: asyncio.Event, o
             pass
 
 
+async def _lookup_users(host: str, port: int, token: str) -> Dict[str, str]:
+    m = await rpc(host, port, make(MessageType.METRICS, token=token), timeout=15)
+    users = ((m or {}).get("topology") or {}).get("users") or []
+    return {str(u.get("name")): str(u.get("user_id")) for u in users if u.get("name") and u.get("user_id")}
+
+
 async def amain() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--master", default="13.217.224.71:9100")
     p.add_argument("--token", default="")
     p.add_argument("--chunks", type=int, default=6)
+    p.add_argument(
+        "--reuse-users",
+        action="store_true",
+        help="Submit as already-connected console users (no new hello/bye)",
+    )
     args = p.parse_args()
     host, port_s = args.master.split(":")
     port = int(port_s)
     token = (args.token or os.environ.get("HPC_JOIN_TOKEN") or "").strip()
+
+    reuse: Dict[str, str] = {}
+    if args.reuse_users:
+        reuse = await _lookup_users(host, port, token)
+        for need in ("Eliza", "Bob"):
+            if need not in reuse:
+                print(f"[dual] missing online user {need}; online={list(reuse)}", flush=True)
+                return 2
+        print(f"[dual] reusing sessions {reuse}", flush=True)
 
     stop = asyncio.Event()
     snaps: list = []
@@ -210,6 +244,7 @@ async def amain() -> int:
         ROOT / "examples" / "matmul_eliza" / "A.csv",
         args.chunks,
         "Eliza",
+        reuse_user_id=reuse.get("Eliza"),
     )
     bob = run_one(
         host,
@@ -220,6 +255,7 @@ async def amain() -> int:
         ROOT / "examples" / "matmul_bob" / "A.csv",
         args.chunks,
         "Bob",
+        reuse_user_id=reuse.get("Bob"),
     )
     print("[dual] launching Eliza + Bob submits together…", flush=True)
     results = await asyncio.gather(eliza, bob)

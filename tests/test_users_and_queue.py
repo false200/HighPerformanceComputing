@@ -67,6 +67,27 @@ def test_topology_includes_users(tmp_path):
     assert topo["intake"]["backend"] == "test"
 
 
+def test_submit_rejected_when_no_workers(tmp_path):
+    cfg = {
+        "master": {"host": "0.0.0.0", "port": 9100, "health_port": 9101},
+        "auth": {"require_token": False},
+        "scheduling": {"default_deadline_sec": 60},
+        "queue": {"backend": "test", "max_running_jobs": 2},
+        "workloads": {"batch": {"arrays": 2, "length": 10}},
+        "storage": {"backend": "local", "local_root": str(tmp_path)},
+        "logging": {"dir": str(tmp_path), "metrics_csv": str(tmp_path / "m.csv")},
+        "burst": {"mode": "local_sim", "max_cloud_vms": 1},
+    }
+    m = MasterServer(cfg, tmp_path)
+    u = m.users.hello(name="lonely")
+    r = m._on_job_submit({"kernel": "batch", "chunks": 2, "user_id": u.user_id, "policy": "campus_only"})
+    assert r.get("ok") is False
+    assert r.get("error") == "no workers connected"
+    assert r.get("queued") is False
+    assert m.job_queue.depth() == 0
+    assert m.scheduler.running_job_count() == 0
+
+
 def test_submit_queues_when_at_capacity(tmp_path):
     cfg = {
         "master": {"host": "0.0.0.0", "port": 9100, "health_port": 9101},
@@ -79,6 +100,9 @@ def test_submit_queues_when_at_capacity(tmp_path):
         "burst": {"mode": "local_sim", "max_cloud_vms": 1},
     }
     m = MasterServer(cfg, tmp_path)
+    m.scheduler.register_worker(
+        WorkerInfo("c1", "campus", 4, 4096, "win", consented=True, cpu_cap_threads=2)
+    )
     u1 = m.users.hello(name="u1")
     u2 = m.users.hello(name="u2")
     r1 = m._on_job_submit({"kernel": "batch", "chunks": 2, "user_id": u1.user_id, "policy": "campus_only"})

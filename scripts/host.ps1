@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$env:PYTHONPATH = $Root
+$env:PYTHONPATH = Join-Path $Root "backend"
 
 function Get-LanIPv4 {
   Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |

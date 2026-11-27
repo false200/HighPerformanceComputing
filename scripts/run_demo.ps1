@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$env:PYTHONPATH = $Root
+$env:PYTHONPATH = Join-Path $Root "backend"
 
 if (-not (Test-Path "$Root\bin\omp_kernels.exe")) {
   & "$Root\scripts\build_kernels.ps1"

@@ -18,39 +18,41 @@ Out of scope: tightly coupled MPI over student Wi-Fi, untrusted binary marketpla
 
 ---
 
-## 2. Logical system (four parts)
+## 2. Logical system (final Lattice fabric)
 
 | Part | Role |
 |------|------|
-| **Master / Coordinator** | Accept jobs, partition tasks, peer-first schedule, reclaim, burst policy, merge metrics/results |
-| **Campus worker** | Consent UI, owner QoS, heartbeat, OpenMP kernel execution, pause/leave |
-| **Cloud-burst worker** | Same worker image (`--kind cloud`), system-launched, auto-retired when idle |
-| **Cloud support** | Object storage (local or S3) for checkpoints/results; optional dashboard |
+| **Coordinator (master)** | Auth, packages, partition, peer-first schedule, reclaim, burst, metrics — TCP `:9100` |
+| **RabbitMQ intake** | Holds **whole jobs** only when `running_jobs >= max_running_jobs` (not per-task waiting) |
+| **Campus peer** | `Worker.bat` — consent, QoS caps, heartbeat, run `userjob` shards |
+| **User / submitter** | `User.bat` — `USER_HELLO`, upload package, `JOB_SUBMIT`; visible on console |
+| **Console** | `frontend/` via `backend/dashboard` — campus fabric desk at `:8080` |
+| **Cloud-burst peer** | Same worker image (`--kind cloud`), launched/retired under overflow policy |
 
 ```text
-                    ┌─────────────────────────────┐
-                    │     Operator / Client       │
-                    │  submit job · force-burst   │
-                    └──────────────┬──────────────┘
-                                   │ JOB_SUBMIT
-                                   ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                         MASTER NODE                              │
-│  Scheduler (peer-first) · Reclaim manager · Burst controller     │
-│  Metrics collector · Object store writer · TCP :9100              │
-└───────────────┬────────────────────────────┬─────────────────────┘
-                │ TASK_ASSIGN / HEARTBEAT    │ launch / retire
-     ┌──────────┴──────────┐      ┌──────────┴──────────┐
-     ▼                     ▼      ▼                     ▼
-┌─────────────┐      ┌─────────────┐   ┌─────────────┐   ┌──────────┐
-│ Campus W1   │ …    │ Campus Wn   │   │ Cloud VM 1  │…  │ Cloud Vk │
-│ consent+QoS │      │ OpenMP      │   │ same image  │   │          │
-└─────────────┘      └─────────────┘   └─────────────┘   └──────────┘
-                                   │
-                                   ▼
-                         Checkpoints / Results
-                         (local data/ or S3)
+   User.bat (submitters)              Worker.bat (peers)
+   USER_HELLO · PACKAGE_PUT           REGISTER · HEARTBEAT
+   JOB_SUBMIT                         TASK_RESULT / CHECKPOINT
+          \                              /
+           \                            /
+            ▼                          ▼
+     ┌──────────────────────────────────────────────┐
+     │           COORDINATOR  (AWS EC2)             │
+     │  auth · packages · scheduler · reclaim       │
+     │  TCP :9100          health :9101             │
+     │         │                                    │
+     │         ▼  (only when at job capacity)       │
+     │    RabbitMQ job intake :5672                 │
+     └──────────────────┬───────────────────────────┘
+                        │ METRICS
+                        ▼
+              Lattice console :8080
+         (peers · users · jobs · intake)
+                        │
+            TASK_ASSIGN to campus / cloud peers
 ```
+
+**waiting vs intake:** console **waiting** = admitted task shards in the scheduler; **intake** = RabbitMQ depth for whole jobs. See README.
 
 ---
 
@@ -58,10 +60,10 @@ Out of scope: tightly coupled MPI over student Wi-Fi, untrusted binary marketpla
 
 | Layer | Contents | Key paths |
 |-------|----------|-----------|
-| **Presentation / ops** | Consent text, stdin controls, Flask dashboard, CLI client | `worker/consent.py`, `worker/agent.py`, `dashboard/app.py`, `master/client.py` |
+| **Presentation / ops** | Consent text, stdin controls, Flask dashboard, CLI client | `backend/worker/consent.py`, `backend/worker/agent.py`, `backend/dashboard/app.py` + `frontend/`, `backend/master/client.py` |
 | **Orchestration** | Job partition, peer-first assign, reclaim, burst evaluate/launch/retire | `master/server.py`, `master/scheduler.py`, `master/burst.py` |
 | **Ray-inspired core** | Logical resources, ObjectRef + lineage, GCS metadata, max_retries, pack/spread | `master/resources.py`, `object_ref.py`, `gcs.py` — see [`ray_inspired_core.md`](ray_inspired_core.md) |
-| **Execution** | OpenMP scientific kernels invoked as a native binary | `kernels/omp_kernels.cpp` → `bin/omp_kernels` |
+| **Execution** | OpenMP scientific kernels invoked as a native binary | `backend/kernels/omp_kernels.cpp` → `bin/omp_kernels` |
 | **Platform** | JSON/TCP protocol, local/S3 object store, Docker/AWS launch stubs, config | `protocol/`, `master/storage.py`, `docker/`, `scripts/aws_*`, `config/default.yaml` |
 
 Data plane (task payloads, checkpoints, results) and control plane (heartbeats, pause/leave, burst) share the same TCP JSON line protocol for simplicity on a classroom LAN.
@@ -182,7 +184,8 @@ config/default.yaml          thresholds, ports, workloads, burst mode
         │
 protocol/messages.py         wire format
         │
-kernels/omp_kernels.cpp      native OpenMP binary
+backend/kernels/omp_kernels.cpp  native OpenMP binary
+frontend/                    Lattice console (HTML/CSS/JS)
         │
 master/scheduler.py          tasks, workers, reclaim, projection
 master/burst.py              policy + VM lifecycle
@@ -193,7 +196,7 @@ master/client.py             submit + wait
 worker/consent.py · qos.py · agent.py
                              python -m worker
         │
-dashboard/app.py             optional status UI
+backend/dashboard/app.py     console API (serves frontend/)
 docker/Dockerfile            cloud worker image
 scripts/*                    build, demo, experiments, AWS stubs
 tests/*                      unit + integration

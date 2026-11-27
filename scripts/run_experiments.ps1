@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
-$env:PYTHONPATH = $Root
+$env:PYTHONPATH = Join-Path $Root "backend"
 New-Item -ItemType Directory -Force -Path "$Root\experiments\out" | Out-Null
 
 function Invoke-Scenario($Name, $Policy, $Workers, $Chunks, $Kernel, $ForceBurst, $LeaveAfter) {

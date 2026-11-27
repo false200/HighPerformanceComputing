@@ -46,6 +46,7 @@ class WorkerInfo:
     cores: int
     memory_mb: int
     os_name: str
+    name: str = ""  # human label (Aejaz, Divyesh, …)
     cpu_cap_threads: int = 0
     memory_cap_mb: int = 0  # 0 = use memory_mb as-is
     gpu_count: int = 0  # inventory only; kernels are CPU/OpenMP today
@@ -542,7 +543,3 @@ def merge_user_shard_results(job: Job) -> Optional[Dict[str, Any]]:
     if any("mse" in r for r in rows):
         out["mean_mse"] = sum(float(r.get("mse", 0.0)) for r in rows) / len(rows)
     return out
-
-
-# Back-compat alias for older tests/imports
-average_ml_model = merge_user_shard_results
