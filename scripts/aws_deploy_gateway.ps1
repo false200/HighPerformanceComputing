@@ -88,7 +88,7 @@ t = re.sub(r'backend:\s*"s3"', 'backend: "local"', t)
 p.write_text(t)
 PY
 nohup env HPC_JOIN_TOKEN='$TokenForBash' PYTHONPATH=/opt/hpc-grid python3 -m master --config "`$CFG" >/var/log/hpc-master.log 2>&1 &
-nohup python3 dashboard/app.py --master 127.0.0.1:9100 --port 8080 >/var/log/hpc-dash.log 2>&1 &
+nohup env HPC_JOIN_TOKEN='$TokenForBash' PYTHONPATH=/opt/hpc-grid python3 dashboard/app.py --master 127.0.0.1:9100 --port 8080 >/var/log/hpc-dash.log 2>&1 &
 echo "HPC gateway started cfg=`$CFG" >> /var/log/hpc-master.log
 "@
 

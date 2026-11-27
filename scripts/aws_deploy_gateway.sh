@@ -38,8 +38,8 @@ mkdir -p bin
 g++ -O2 -std=c++17 -fopenmp -Wall kernels/omp_kernels.cpp -o bin/omp_kernels || true
 export PYTHONPATH=/opt/hpc-grid
 PUBLIC_IP=\$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || true)
-nohup python3 -m master --config /opt/hpc-grid/config/default.yaml >/var/log/hpc-master.log 2>&1 &
-nohup python3 dashboard/app.py --master 127.0.0.1:9100 --port 8080 >/var/log/hpc-dash.log 2>&1 &
+nohup env PYTHONPATH=/opt/hpc-grid python3 -m master --config /opt/hpc-grid/config/default.yaml >/var/log/hpc-master.log 2>&1 &
+nohup env PYTHONPATH=/opt/hpc-grid HPC_JOIN_TOKEN="\${HPC_JOIN_TOKEN:-}" python3 dashboard/app.py --master 127.0.0.1:9100 --port 8080 >/var/log/hpc-dash.log 2>&1 &
 EOF
 
 KEY_ARGS=()

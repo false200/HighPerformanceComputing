@@ -256,7 +256,12 @@ class MasterServer:
             if mtype == MessageType.METRICS.value:
                 if self.require_token and not self._operator_authed(msg):
                     return make(MessageType.ERROR, error="unauthorized")
-                return make(MessageType.METRICS, burst=self.burst.status(), workers=self._worker_snapshot())
+                return make(
+                    MessageType.METRICS,
+                    burst=self.burst.status(),
+                    workers=self._worker_snapshot(),
+                    topology=self._topology_snapshot(),
+                )
             if mtype == MessageType.SHUTDOWN.value:
                 if not self._operator_authed(msg):
                     return make(MessageType.ERROR, error="unauthorized")
@@ -459,8 +464,12 @@ class MasterServer:
         print(f"[master] job {job.job_id} DONE checksum={job.checksum:.6f} wall={m.wall_time_sec:.3f}s", flush=True)
 
     def _worker_snapshot(self) -> List[Dict[str, Any]]:
+        now = time.time()
         out = []
         for w in self.scheduler.workers.values():
+            assigned_ids = [
+                tid for tid, wid in self.scheduler.assigned.items() if wid == w.worker_id
+            ]
             out.append({
                 "worker_id": w.worker_id,
                 "kind": w.kind,
@@ -474,8 +483,76 @@ class MasterServer:
                 "paused": w.paused,
                 "tasks_done": w.tasks_done,
                 "cpu_cap_threads": w.cpu_cap_threads,
+                "load": len(assigned_ids),
+                "assigned_tasks": assigned_ids,
+                "heartbeat_age_sec": round(max(0.0, now - w.last_heartbeat), 2),
+                "connected_for_sec": round(max(0.0, now - w.connected_at), 1),
             })
         return out
+
+    def _topology_snapshot(self) -> Dict[str, Any]:
+        """Live fabric view for the gateway dashboard (hub + workers + jobs)."""
+        workers = self._worker_snapshot()
+        links = [
+            {
+                "from": w["worker_id"],
+                "to": "gateway",
+                "kind": w["kind"],
+                "active": int(w.get("load", 0)) > 0,
+                "paused": bool(w.get("paused")),
+            }
+            for w in workers
+        ]
+        jobs_out: List[Dict[str, Any]] = []
+        for job in sorted(
+            self.scheduler.jobs.values(),
+            key=lambda j: j.created_at,
+            reverse=True,
+        )[:12]:
+            prog = self.scheduler.job_progress(job.job_id)
+            task_rows = []
+            for t in job.tasks:
+                task_rows.append({
+                    "task_id": t.task_id,
+                    "state": t.state.value,
+                    "worker_id": t.worker_id,
+                    "attempts": t.attempts,
+                    "kernel": t.kernel,
+                })
+            jobs_out.append({
+                **prog,
+                "created_at": job.created_at,
+                "active": job.job_id == self.active_job_id and job.finished_at is None,
+                "tasks": task_rows,
+            })
+        pending = list(self.scheduler.pending)
+        assigned = [
+            {"task_id": tid, "worker_id": wid}
+            for tid, wid in self.scheduler.assigned.items()
+        ]
+        return {
+            "gateway": {
+                "id": "gateway",
+                "role": "master",
+                "host": self.cfg.get("master", {}).get("advertise_host") or self.host,
+                "port": self.port,
+                "active_job_id": self.active_job_id,
+                "auth": bool(self.join_token),
+                "storage": self.store.backend,
+                "burst_mode": self.burst.mode,
+                "pending_tasks": len(pending),
+                "assigned_tasks": len(assigned),
+                "worker_count": len(workers),
+                "campus_count": sum(1 for w in workers if w["kind"] == "campus"),
+                "cloud_count": sum(1 for w in workers if w["kind"] == "cloud"),
+            },
+            "workers": workers,
+            "links": links,
+            "jobs": jobs_out,
+            "queue": {"pending": pending[:40], "assigned": assigned},
+            "gcs": self.scheduler.gcs.snapshot(),
+            "ts": time.time(),
+        }
 
     async def _control_loop(self) -> None:
         while self.state.get("running", True):
