@@ -362,7 +362,7 @@ class Scheduler:
             job.checksum = sum(
                 float(t.result.get("checksum", 0.0)) for t in job.tasks if t.result
             )
-            if job.kernel in ("logreg", "linreg"):
+            if job.kernel in ("logreg", "linreg", "userjob"):
                 job.model = average_ml_model(job)
         return job, recovery, ref
 
@@ -506,9 +506,9 @@ def average_ml_model(job: Job) -> Optional[Dict[str, Any]]:
         "bias": avg_b,
         "shards": len(rows),
     }
-    if job.kernel == "logreg":
+    if job.kernel in ("logreg", "userjob") or any("train_acc" in r for r in rows):
         out["mean_train_acc"] = sum(float(r.get("train_acc", 0.0)) for r in rows) / len(rows)
         out["mean_loss"] = sum(float(r.get("loss", 0.0)) for r in rows) / len(rows)
-    else:
+    elif job.kernel == "linreg":
         out["mean_mse"] = sum(float(r.get("mse", 0.0)) for r in rows) / len(rows)
     return out

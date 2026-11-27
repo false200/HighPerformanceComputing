@@ -22,6 +22,7 @@ from master.burst import BurstController
 from master.config_validate import validate_config
 from master.health import HealthServer
 from master.metrics import MetricsCollector, RunMetrics
+from master.packages import PackageStore
 from master.scheduler import Job, Scheduler, WorkerInfo
 from master.storage import ObjectStore
 from protocol.messages import MAX_MESSAGE_BYTES, MessageType, decode, encode, make
@@ -66,9 +67,51 @@ def partition_job(kernel: str, cfg: Dict[str, Any], n_chunks: int) -> List[Dict[
                 "weight": count,
                 "params": {"offset": offset, "count": count, "length": length},
             })
+    elif kernel == "userjob":
+        # Live package on master — shard CSV in-memory; workers get code+rows in TASK_ASSIGN
+        overrides = cfg.get("_job_overrides") or {}
+        packages: PackageStore = cfg.get("_packages")  # injected by MasterServer
+        package_id = str(overrides.get("package_id") or "")
+        pkg = packages.get(package_id) if packages else None
+        if pkg is None:
+            raise ValueError(f"unknown package_id {package_id}")
+        dataset = str(overrides.get("dataset") or pkg.meta.get("dataset") or "data.csv")
+        entry = str(overrides.get("entrypoint") or pkg.meta.get("entrypoint") or "train.py")
+        label_col = overrides.get("label_col") or pkg.meta.get("label_col")
+        epochs = int(overrides.get("epochs") or pkg.meta.get("epochs") or 40)
+        lr = float(overrides.get("lr") or pkg.meta.get("lr") or 0.08)
+        lines = pkg.csv_rows(dataset)
+        if len(lines) < 2:
+            raise ValueError("dataset CSV needs header + rows")
+        header = lines[0]
+        data_lines = lines[1:]
+        total_rows = len(data_lines)
+        each = max(1, math.ceil(total_rows / n_chunks))
+        train_src = pkg.get(entry) or ""
+        if not train_src.strip():
+            raise ValueError(f"entrypoint {entry} missing in package")
+        for i in range(n_chunks):
+            offset = i * each
+            if offset >= total_rows:
+                break
+            count = min(each, total_rows - offset)
+            shard_rows = data_lines[offset : offset + count]
+            params = {
+                "shard": i,
+                "package_id": package_id,
+                "entrypoint": entry,
+                "train_source": train_src,
+                "csv_header": header,
+                "shard_rows": shard_rows,
+                "epochs": epochs,
+                "lr": lr,
+                "n_samples": count,
+            }
+            if label_col:
+                params["label_col"] = label_col
+            specs.append({"weight": count, "params": params})
     elif kernel in ("logreg", "linreg"):
         ml = dict(wl.get(kernel, {}) or wl.get("logreg", {}) or {})
-        # Optional per-submit overrides (from job YAML / JOB_SUBMIT)
         overrides = cfg.get("_job_overrides") or {}
         ml.update({k: v for k, v in overrides.items() if v is not None})
         epochs = int(ml.get("epochs", 25))
@@ -132,6 +175,7 @@ class MasterServer:
         self.cfg = cfg
         self.project_root = project_root
         self.scheduler = Scheduler()
+        self.packages = PackageStore()
         self.store = ObjectStore(cfg.get("storage", {}))
         log_cfg = cfg.get("logging", {})
         self.metrics = MetricsCollector(
@@ -192,6 +236,7 @@ class MasterServer:
             "storage": self.store.backend,
             "burst_mode": self.burst.mode,
             "gcs": self.scheduler.gcs.snapshot(),
+            "packages": self.packages.snapshot(),
         }
 
     async def serve_forever(self) -> None:
@@ -286,6 +331,15 @@ class MasterServer:
             if mtype == MessageType.RESUME.value:
                 self.scheduler.set_paused(msg["worker_id"], False)
                 return make(MessageType.RESUME, ok=True)
+            if mtype == MessageType.PACKAGE_PUT.value:
+                if not self._operator_authed(msg):
+                    self.audit.emit("auth_denied", action="PACKAGE_PUT")
+                    return make(MessageType.ERROR, error="unauthorized")
+                return self._on_package_put(msg)
+            if mtype == MessageType.PACKAGE_GET.value:
+                if not self._operator_authed(msg):
+                    return make(MessageType.ERROR, error="unauthorized")
+                return self._on_package_get(msg)
             if mtype == MessageType.JOB_SUBMIT.value:
                 if not self._operator_authed(msg):
                     self.audit.emit("auth_denied", action="JOB_SUBMIT")
@@ -442,6 +496,53 @@ class MasterServer:
             leave_latency_ms=latency_ms,
         )
 
+    def _on_package_put(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        files = msg.get("files") or {}
+        if not isinstance(files, dict) or not files:
+            return make(MessageType.ERROR, error="files map required")
+        try:
+            pkg = self.packages.put(
+                files={str(k): str(v) for k, v in files.items()},
+                name=str(msg.get("name") or "user-job"),
+                meta=dict(msg.get("meta") or {}),
+            )
+        except ValueError as exc:
+            return make(MessageType.ERROR, error=str(exc))
+        # Durable copy under object store as well
+        self.store.put_json(
+            "packages",
+            pkg.package_id,
+            {"package_id": pkg.package_id, "name": pkg.name, "files": list(pkg.files.keys()), "meta": pkg.meta},
+        )
+        self.audit.emit("package_put", package_id=pkg.package_id, files=list(pkg.files.keys()))
+        print(f"[master] stored package {pkg.package_id} files={list(pkg.files.keys())}", flush=True)
+        return make(
+            MessageType.PACKAGE_PUT,
+            ok=True,
+            package_id=pkg.package_id,
+            files=list(pkg.files.keys()),
+        )
+
+    def _on_package_get(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        pid = str(msg.get("package_id") or "")
+        pkg = self.packages.get(pid)
+        if not pkg:
+            return make(MessageType.ERROR, error="package not found")
+        want = msg.get("path")
+        if want:
+            content = pkg.get(str(want))
+            if content is None:
+                return make(MessageType.ERROR, error=f"file not in package: {want}")
+            return make(MessageType.PACKAGE_GET, ok=True, package_id=pid, path=want, content=content)
+        return make(
+            MessageType.PACKAGE_GET,
+            ok=True,
+            package_id=pid,
+            name=pkg.name,
+            files=list(pkg.files.keys()),
+            meta=pkg.meta,
+        )
+
     def _on_job_submit(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         kernel = msg.get("kernel", "heat2d")
         policy = msg.get("policy", "hybrid")
@@ -450,9 +551,9 @@ class MasterServer:
         deadline = float(msg.get("deadline_sec", sched_cfg.get("default_deadline_sec", 120)))
         max_retries = int(msg.get("max_retries", sched_cfg.get("max_retries", 3)))
         placement = str(msg.get("placement", sched_cfg.get("placement", "spread")))
-        # Shallow copy so per-job dataset/epochs overrides do not mutate process config
         cfg = dict(self.cfg)
         cfg["workloads"] = dict(self.cfg.get("workloads") or {})
+        cfg["_packages"] = self.packages
         overrides = {
             "dataset": msg.get("dataset"),
             "label_col": msg.get("label_col"),
@@ -461,9 +562,16 @@ class MasterServer:
             "n_rows": msg.get("n_rows"),
             "n_samples": msg.get("n_samples"),
             "n_features": msg.get("n_features"),
+            "package_id": msg.get("package_id"),
+            "entrypoint": msg.get("entrypoint"),
         }
         cfg["_job_overrides"] = overrides
-        specs = partition_job(kernel, cfg, n_chunks)
+        try:
+            specs = partition_job(kernel, cfg, n_chunks)
+        except ValueError as exc:
+            return make(MessageType.ERROR, error=str(exc))
+        if not specs:
+            return make(MessageType.ERROR, error="job produced zero tasks")
         job = self.scheduler.create_job(
             kernel,
             specs,
@@ -485,8 +593,25 @@ class MasterServer:
             self.burst.launches,
             self.burst.snapshot_vm_seconds(),
         )
-        print(f"[master] job {job.job_id} kernel={kernel} tasks={len(job.tasks)} policy={policy}", flush=True)
-        return make(MessageType.JOB_SUBMIT, ok=True, job_id=job.job_id, tasks=len(job.tasks))
+        print(
+            f"[master] job {job.job_id} kernel={kernel} tasks={len(job.tasks)} "
+            f"policy={policy} package={overrides.get('package_id')}",
+            flush=True,
+        )
+        self.audit.emit(
+            "job_submit",
+            job_id=job.job_id,
+            kernel=kernel,
+            tasks=len(job.tasks),
+            package_id=overrides.get("package_id"),
+        )
+        return make(
+            MessageType.JOB_SUBMIT,
+            ok=True,
+            job_id=job.job_id,
+            tasks=len(job.tasks),
+            package_id=overrides.get("package_id"),
+        )
 
     def _serial_proxy(self, kernel: str, specs: List[Dict[str, Any]]) -> float:
         # rough proxy for speedup denominator (seconds)
