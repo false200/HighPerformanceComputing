@@ -248,7 +248,11 @@ class WorkerAgent:
     async def _session(self) -> None:
         host, port_s = self.args.master.split(":")
         port = int(port_s)
-        self.reader, self.writer = await asyncio.open_connection(host, port)
+        from protocol.messages import MAX_MESSAGE_BYTES
+
+        self.reader, self.writer = await asyncio.open_connection(
+            host, port, limit=MAX_MESSAGE_BYTES
+        )
         reader_task = asyncio.create_task(self._reader_loop())
 
         token = (self.args.token or os.environ.get("HPC_JOIN_TOKEN") or "").strip()

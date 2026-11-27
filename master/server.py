@@ -217,7 +217,10 @@ class MasterServer:
         return self._job_metrics_for(task.job_id)
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
+        # limit >> 64KiB so PACKAGE_PUT / sharded CSV tasks are not truncated
+        self._server = await asyncio.start_server(
+            self._handle_client, self.host, self.port, limit=MAX_MESSAGE_BYTES
+        )
         self.state["running"] = True
         self._health = HealthServer(self.host, self.health_port, self._health_payload)
         await self._health.start()

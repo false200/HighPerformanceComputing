@@ -22,7 +22,9 @@ from protocol.messages import MessageType, decode, encode, make
 
 
 async def rpc(host: str, port: int, msg: Dict[str, Any], timeout: float = 60.0) -> Optional[Dict[str, Any]]:
-    reader, writer = await asyncio.open_connection(host, port)
+    from protocol.messages import MAX_MESSAGE_BYTES
+
+    reader, writer = await asyncio.open_connection(host, port, limit=MAX_MESSAGE_BYTES)
     try:
         writer.write(encode(msg))
         await writer.drain()
