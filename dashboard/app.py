@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Live gateway fabric dashboard — topology + jobs (Packet Tracer–style)."""
+"""Live cluster console — draggable topology + jobs."""
 
 import argparse
 import asyncio
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from protocol.messages import MessageType, decode, encode, make
+from protocol.messages import MAX_MESSAGE_BYTES, MessageType, decode, encode, make
 
 app = Flask(__name__)
 MASTER = ("127.0.0.1", 9100)
@@ -26,198 +26,151 @@ PAGE = r"""
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>HPC Grid Fabric</title>
+  <title>Lattice</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Fragment+Mono:wght@400&family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet"/>
   <style>
     :root {
-      --ink: #132033;
-      --paper: #d9e3ee;
-      --panel: #f4f7fb;
-      --line: #8aa0b8;
-      --hub: #c45c26;
-      --campus: #1f7a6c;
-      --cloud: #3b6ea5;
-      --pulse: #e8b84a;
-      --danger: #b33a3a;
-      --muted: #5c6f84;
-      --ok: #1f7a6c;
+      --ink: #141820;
+      --muted: #5a6573;
+      --line: #d5dae0;
+      --bg: #e9ecef;
+      --surface: #f7f8fa;
+      --white: #ffffff;
+      --gateway: #0f3d2e;
+      --peer: #1c4b6e;
+      --cloud: #4a5568;
+      --live: #c9a227;
+      --danger: #9b2c2c;
+      --ok: #0f3d2e;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
-      font-family: Outfit, system-ui, sans-serif;
+      font-family: Sora, system-ui, sans-serif;
       color: var(--ink);
       background:
-        radial-gradient(circle at 12% 8%, #eef4fa 0%, transparent 42%),
-        linear-gradient(180deg, #cfdceb 0%, var(--paper) 55%, #c5d3e3 100%);
+        radial-gradient(ellipse 80% 50% at 10% -10%, #dfe7ef 0%, transparent 55%),
+        linear-gradient(165deg, #eef1f4 0%, var(--bg) 45%, #e3e7ec 100%);
       overflow: hidden;
     }
     .shell {
       display: grid;
-      grid-template-columns: 1fr 340px;
+      grid-template-columns: 1fr minmax(280px, 320px);
       grid-template-rows: auto 1fr;
       height: 100%;
-      gap: 0;
     }
     header {
       grid-column: 1 / -1;
       display: flex;
-      align-items: center;
+      align-items: baseline;
       justify-content: space-between;
-      padding: 0.85rem 1.25rem;
-      border-bottom: 1px solid #a9bbcf;
-      background: rgba(244,247,251,0.88);
-      backdrop-filter: blur(8px);
+      gap: 1rem;
+      padding: 1rem 1.35rem;
+      border-bottom: 1px solid #cfd5dc;
+      background: rgba(247,248,250,0.92);
     }
-    header h1 {
+    .brand {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
       margin: 0;
-      font-size: 1.15rem;
-      font-weight: 650;
-      letter-spacing: -0.02em;
     }
-    header .sub {
-      font-family: "IBM Plex Mono", monospace;
+    .brand span { color: var(--muted); font-weight: 500; font-size: 0.85rem; margin-left: 0.55rem; }
+    .stats {
+      display: flex;
+      gap: 1.25rem;
+      font-family: "Fragment Mono", monospace;
       font-size: 0.72rem;
       color: var(--muted);
-      margin-top: 0.15rem;
     }
-    .pills { display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
-    .pill {
-      font-family: "IBM Plex Mono", monospace;
-      font-size: 0.7rem;
-      padding: 0.35rem 0.65rem;
-      border: 1px solid #9eb2c8;
-      background: #fff;
-      border-radius: 999px;
-    }
-    .pill strong { color: var(--hub); }
-    .pill.ok strong { color: var(--ok); }
-    .stage {
-      position: relative;
-      min-height: 0;
-      border-right: 1px solid #a9bbcf;
-    }
+    .stats b { color: var(--ink); font-weight: 500; }
+    .stage { position: relative; min-height: 0; border-right: 1px solid #cfd5dc; }
     #topo {
       width: 100%;
       height: 100%;
       display: block;
-      cursor: grab;
+      cursor: default;
+      touch-action: none;
     }
-    #topo:active { cursor: grabbing; }
+    #topo.grab { cursor: grab; }
+    #topo.dragging { cursor: grabbing; }
     .hint {
       position: absolute;
       left: 1rem;
       bottom: 1rem;
-      font-family: "IBM Plex Mono", monospace;
-      font-size: 0.68rem;
+      font-size: 0.75rem;
       color: var(--muted);
-      background: rgba(244,247,251,0.9);
-      border: 1px solid #b7c7d8;
-      padding: 0.45rem 0.65rem;
-      border-radius: 8px;
+      background: rgba(247,248,250,0.95);
+      border: 1px solid #cfd5dc;
+      padding: 0.4rem 0.65rem;
       pointer-events: none;
     }
     aside {
-      min-height: 0;
       overflow: auto;
-      background: var(--panel);
+      background: var(--surface);
       padding: 1rem;
       display: flex;
       flex-direction: column;
-      gap: 1rem;
+      gap: 1.1rem;
     }
-    .card {
-      background: #fff;
-      border: 1px solid #b8c8d9;
-      border-radius: 12px;
-      padding: 0.85rem 0.95rem;
-      box-shadow: 0 1px 0 rgba(19,32,51,0.04);
+    section.block h2 {
+      margin: 0 0 0.55rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--ink);
     }
-    .card h2 {
-      margin: 0 0 0.65rem;
-      font-size: 0.78rem;
-      font-weight: 650;
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-    .statrow {
+    .grid2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 0.5rem;
+      gap: 0.45rem;
     }
-    .stat {
-      background: #eef3f8;
-      border-radius: 8px;
+    .metric {
+      background: var(--white);
+      border: 1px solid #d0d6dd;
       padding: 0.55rem 0.65rem;
     }
-    .stat .n {
-      font-family: "IBM Plex Mono", monospace;
-      font-size: 1.25rem;
-      font-weight: 600;
-      line-height: 1.1;
+    .metric .n {
+      font-family: "Fragment Mono", monospace;
+      font-size: 1.15rem;
+      font-weight: 500;
     }
-    .stat .l { font-size: 0.7rem; color: var(--muted); margin-top: 0.15rem; }
-    .job {
-      border: 1px solid #c5d2e1;
-      border-radius: 10px;
-      padding: 0.65rem 0.7rem;
-      margin-bottom: 0.55rem;
-      background: #fbfcfe;
+    .metric .l { font-size: 0.68rem; color: var(--muted); margin-top: 0.15rem; }
+    .nodes, .jobs { list-style: none; margin: 0; padding: 0; }
+    .nodes li, .job {
+      background: var(--white);
+      border: 1px solid #d0d6dd;
+      padding: 0.55rem 0.65rem;
+      margin-bottom: 0.4rem;
+      font-size: 0.78rem;
     }
-    .job.active { border-color: var(--hub); box-shadow: inset 3px 0 0 var(--hub); }
-    .job .id {
-      font-family: "IBM Plex Mono", monospace;
-      font-size: 0.72rem;
-      font-weight: 600;
-    }
-    .job .meta {
-      font-size: 0.72rem;
-      color: var(--muted);
-      margin-top: 0.2rem;
-    }
+    .job.active { border-left: 3px solid var(--gateway); }
+    .mono { font-family: "Fragment Mono", monospace; font-size: 0.68rem; }
+    .muted { color: var(--muted); }
     .bar {
-      height: 7px;
-      background: #d7e1ec;
-      border-radius: 99px;
+      height: 4px;
+      background: #dde2e8;
+      margin-top: 0.4rem;
       overflow: hidden;
-      margin-top: 0.45rem;
     }
     .bar > i {
       display: block;
       height: 100%;
-      background: linear-gradient(90deg, var(--campus), #2fa894);
-      width: 0%;
-      transition: width 0.4s ease;
+      width: 0;
+      background: var(--gateway);
+      transition: width 0.35s ease;
     }
-    .bar > i.fail { background: var(--danger); }
-    .wlist { list-style: none; margin: 0; padding: 0; }
-    .wlist li {
-      display: grid;
-      grid-template-columns: 10px 1fr auto;
-      gap: 0.5rem;
-      align-items: center;
-      padding: 0.45rem 0;
-      border-bottom: 1px dashed #d0dbe8;
-      font-size: 0.8rem;
-    }
-    .wlist li:last-child { border-bottom: 0; }
-    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--campus); }
-    .dot.cloud { background: var(--cloud); }
-    .dot.paused { background: #9aa8b8; }
-    .dot.busy { box-shadow: 0 0 0 3px rgba(232,184,74,0.45); }
-    .wid { font-family: "IBM Plex Mono", monospace; font-size: 0.68rem; }
     .err {
       color: var(--danger);
-      font-family: "IBM Plex Mono", monospace;
-      font-size: 0.75rem;
+      font-family: "Fragment Mono", monospace;
+      font-size: 0.72rem;
       white-space: pre-wrap;
     }
-    @media (max-width: 900px) {
-      .shell { grid-template-columns: 1fr; grid-template-rows: auto 48vh 1fr; }
-      .stage { border-right: 0; border-bottom: 1px solid #a9bbcf; }
+    @media (max-width: 860px) {
+      .shell { grid-template-columns: 1fr; grid-template-rows: auto 46vh 1fr; }
+      .stage { border-right: 0; border-bottom: 1px solid #cfd5dc; }
+      .stats { flex-wrap: wrap; justify-content: flex-end; }
     }
     @media (prefers-reduced-motion: reduce) {
       .bar > i { transition: none; }
@@ -227,41 +180,38 @@ PAGE = r"""
 <body>
   <div class="shell">
     <header>
-      <div>
-        <h1>HPC Grid Fabric</h1>
-        <div class="sub" id="subtitle">gateway topology · live</div>
-      </div>
-      <div class="pills">
-        <div class="pill ok">workers <strong id="p-workers">—</strong></div>
-        <div class="pill">campus <strong id="p-campus">—</strong></div>
-        <div class="pill">cloud <strong id="p-cloud">—</strong></div>
-        <div class="pill">queue <strong id="p-queue">—</strong></div>
-        <div class="pill">updated <strong id="p-ago">—</strong></div>
+      <h1 class="brand">Lattice<span id="subtitle">cluster console</span></h1>
+      <div class="stats">
+        <div>peers <b id="p-workers">—</b></div>
+        <div>local <b id="p-campus">—</b></div>
+        <div>remote <b id="p-cloud">—</b></div>
+        <div>queue <b id="p-queue">—</b></div>
+        <div>sync <b id="p-ago">—</b></div>
       </div>
     </header>
     <section class="stage">
       <canvas id="topo"></canvas>
-      <div class="hint">center = AWS gateway · teal = campus · blue = cloud · dashed pulse = active traffic</div>
+      <div class="hint">Drag nodes to rearrange · gold pulse = active work</div>
     </section>
     <aside>
-      <div class="card">
-        <h2>Gateway</h2>
-        <div class="statrow">
-          <div class="stat"><div class="n" id="g-pending">0</div><div class="l">pending tasks</div></div>
-          <div class="stat"><div class="n" id="g-assigned">0</div><div class="l">in flight</div></div>
-          <div class="stat"><div class="n" id="g-auth">—</div><div class="l">join auth</div></div>
-          <div class="stat"><div class="n" id="g-burst">—</div><div class="l">burst mode</div></div>
+      <section class="block">
+        <h2>Coordinator</h2>
+        <div class="grid2">
+          <div class="metric"><div class="n" id="g-pending">0</div><div class="l">waiting</div></div>
+          <div class="metric"><div class="n" id="g-assigned">0</div><div class="l">running</div></div>
+          <div class="metric"><div class="n" id="g-auth">—</div><div class="l">auth</div></div>
+          <div class="metric"><div class="n" id="g-burst">—</div><div class="l">overflow</div></div>
         </div>
-      </div>
-      <div class="card">
-        <h2>Connected nodes</h2>
-        <ul class="wlist" id="wlist"><li><span class="wid">waiting for peers…</span></li></ul>
-      </div>
-      <div class="card">
+      </section>
+      <section class="block">
+        <h2>Peers</h2>
+        <ul class="nodes" id="wlist"><li class="muted mono">No peers connected</li></ul>
+      </section>
+      <section class="block">
         <h2>Jobs</h2>
-        <div id="jobs"><div class="meta">no jobs yet</div></div>
-      </div>
-      <div class="card" id="errbox" style="display:none"><div class="err" id="err"></div></div>
+        <div id="jobs"><div class="muted">No jobs yet</div></div>
+      </section>
+      <section class="block" id="errbox" style="display:none"><div class="err" id="err"></div></section>
     </aside>
   </div>
   <script>
@@ -271,6 +221,12 @@ PAGE = r"""
     let state = null;
     let t0 = performance.now();
     let lastFetch = 0;
+
+    // Persisted drag positions: id -> {x,y}
+    const pos = Object.create(null);
+    let dragId = null;
+    let dragOff = { x: 0, y: 0 };
+    let nodeHit = []; // {id,x,y,r} from last frame
 
     function resize() {
       const rect = canvas.parentElement.getBoundingClientRect();
@@ -285,16 +241,24 @@ PAGE = r"""
     window.addEventListener('resize', resize);
     resize();
 
-    function hub() { return { x: W * 0.5, y: H * 0.48 }; }
+    function defaultHub() {
+      return { x: W * 0.5, y: H * 0.48 };
+    }
+
+    function ensurePos(id, fallback) {
+      if (!pos[id]) pos[id] = { x: fallback.x, y: fallback.y };
+      return pos[id];
+    }
 
     function layoutWorkers(workers) {
-      const n = workers.length;
-      const cx = W * 0.5, cy = H * 0.48;
-      const R = Math.min(W, H) * (n <= 1 ? 0.28 : 0.34);
-      if (n === 0) return [];
+      const hubP = ensurePos('gateway', defaultHub());
+      const n = workers.length || 1;
+      const R = Math.min(W, H) * (workers.length <= 1 ? 0.28 : 0.34);
       return workers.map((w, i) => {
         const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
-        return { ...w, x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R };
+        const fb = { x: hubP.x + Math.cos(a) * R, y: hubP.y + Math.sin(a) * R };
+        const p = ensurePos(w.worker_id, fb);
+        return { ...w, x: p.x, y: p.y };
       });
     }
 
@@ -302,68 +266,56 @@ PAGE = r"""
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.strokeStyle = paused ? '#9aa8b8' : (kind === 'cloud' ? '#3b6ea5' : '#1f7a6c');
-      ctx.globalAlpha = active ? 0.9 : 0.35;
-      ctx.lineWidth = active ? 2.4 : 1.4;
-      if (active) ctx.setLineDash([8, 10]); else ctx.setLineDash([2, 6]);
-      ctx.lineDashOffset = active ? -(now / 30) : 0;
+      const col = paused ? '#9aa3ad' : (kind === 'cloud' ? '#4a5568' : '#1c4b6e');
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = active ? 0.85 : 0.28;
+      ctx.lineWidth = active ? 2.2 : 1.2;
+      ctx.setLineDash(active ? [7, 9] : [2, 5]);
+      ctx.lineDashOffset = active ? -(now / 28) : 0;
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
       if (active) {
-        const u = ((now / 900) % 1);
-        const x = a.x + (b.x - a.x) * u;
-        const y = a.y + (b.y - a.y) * u;
+        const u = (now / 900) % 1;
         ctx.beginPath();
-        ctx.arc(x, y, 4.2, 0, Math.PI * 2);
-        ctx.fillStyle = '#e8b84a';
+        ctx.arc(a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u, 3.8, 0, Math.PI * 2);
+        ctx.fillStyle = '#c9a227';
         ctx.fill();
       }
     }
 
-    function roundRect(x, y, w, h, r) {
-      ctx.beginPath();
-      ctx.moveTo(x + r, y);
-      ctx.arcTo(x + w, y, x + w, y + h, r);
-      ctx.arcTo(x + w, y + h, x, y + h, r);
-      ctx.arcTo(x, y + h, x, y, r);
-      ctx.arcTo(x, y, x + w, y, r);
-      ctx.closePath();
-    }
-
     function drawNode(x, y, label, sub, color, ring) {
       ctx.beginPath();
-      ctx.arc(x, y, 28, 0, Math.PI * 2);
+      ctx.arc(x, y, 26, 0, Math.PI * 2);
       ctx.fillStyle = '#fff';
       ctx.fill();
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 2.5;
       ctx.strokeStyle = color;
       ctx.stroke();
       if (ring) {
         ctx.beginPath();
-        ctx.arc(x, y, 36, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(232,184,74,0.55)';
+        ctx.arc(x, y, 34, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(201,162,39,0.5)';
         ctx.lineWidth = 2;
         ctx.stroke();
       }
-      ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(x, y, 10, 0, Math.PI * 2);
+      ctx.arc(x, y, 9, 0, Math.PI * 2);
+      ctx.fillStyle = color;
       ctx.fill();
-      ctx.fillStyle = '#132033';
-      ctx.font = '600 12px Outfit, sans-serif';
+      ctx.fillStyle = '#141820';
+      ctx.font = '600 12px Sora, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(label, x, y + 48);
-      ctx.fillStyle = '#5c6f84';
-      ctx.font = '500 10px "IBM Plex Mono", monospace';
-      ctx.fillText(sub, x, y + 62);
+      ctx.fillText(label, x, y + 46);
+      ctx.fillStyle = '#5a6573';
+      ctx.font = '400 10px "Fragment Mono", monospace';
+      ctx.fillText(sub, x, y + 60);
     }
 
     function drawGrid() {
       ctx.save();
-      ctx.strokeStyle = 'rgba(90,110,130,0.12)';
-      ctx.lineWidth = 1;
-      const step = 36;
+      ctx.strokeStyle = 'rgba(20,24,32,0.06)';
+      const step = 40;
       for (let x = 0; x < W; x += step) {
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
       }
@@ -377,35 +329,86 @@ PAGE = r"""
       const now = performance.now() - t0;
       ctx.clearRect(0, 0, W, H);
       drawGrid();
-      const g = hub();
+      nodeHit = [];
       const topo = state && state.topology ? state.topology : null;
+      const hubP = ensurePos('gateway', defaultHub());
       const workers = topo ? layoutWorkers(topo.workers || []) : [];
 
       if (!topo) {
-        drawNode(g.x, g.y, 'GATEWAY', 'waiting…', '#c45c26', false);
+        drawNode(hubP.x, hubP.y, 'Coordinator', 'waiting…', '#0f3d2e', false);
+        nodeHit.push({ id: 'gateway', x: hubP.x, y: hubP.y, r: 30 });
         requestAnimationFrame(render);
         return;
       }
 
       for (const w of workers) {
-        drawLink(w, g, !!w.load, w.kind, !!w.paused, now);
+        drawLink(w, hubP, !!w.load, w.kind, !!w.paused, now);
       }
+      const host = (topo.gateway && topo.gateway.host) ? String(topo.gateway.host) : 'live';
       drawNode(
-        g.x, g.y,
-        'GATEWAY',
-        (topo.gateway && topo.gateway.host) ? String(topo.gateway.host) : 'master',
-        '#c45c26',
-        (topo.gateway && topo.gateway.assigned_tasks > 0)
+        hubP.x, hubP.y,
+        'Coordinator',
+        host,
+        '#0f3d2e',
+        !!(topo.gateway && topo.gateway.assigned_tasks > 0)
       );
+      nodeHit.push({ id: 'gateway', x: hubP.x, y: hubP.y, r: 30 });
+
       for (const w of workers) {
-        const short = (w.worker_id || '').slice(0, 12);
-        const sub = `${w.kind} · cpu ${w.effective_threads} · ram ${w.effective_memory_mb}MiB`;
-        const color = w.paused ? '#9aa8b8' : (w.kind === 'cloud' ? '#3b6ea5' : '#1f7a6c');
+        const short = (w.worker_id || 'peer').slice(0, 14);
+        const role = w.kind === 'cloud' ? 'remote' : 'local';
+        const sub = role + ' · ' + w.effective_threads + ' cpu · ' + w.effective_memory_mb + ' MiB';
+        const color = w.paused ? '#9aa3ad' : (w.kind === 'cloud' ? '#4a5568' : '#1c4b6e');
         drawNode(w.x, w.y, short, sub, color, w.load > 0);
+        nodeHit.push({ id: w.worker_id, x: w.x, y: w.y, r: 30 });
       }
       requestAnimationFrame(render);
     }
     requestAnimationFrame(render);
+
+    function canvasPoint(ev) {
+      const r = canvas.getBoundingClientRect();
+      return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    }
+
+    function hitTest(p) {
+      for (let i = nodeHit.length - 1; i >= 0; i--) {
+        const n = nodeHit[i];
+        const dx = p.x - n.x, dy = p.y - n.y;
+        if (dx * dx + dy * dy <= n.r * n.r) return n;
+      }
+      return null;
+    }
+
+    canvas.addEventListener('pointerdown', (ev) => {
+      const p = canvasPoint(ev);
+      const hit = hitTest(p);
+      if (!hit) return;
+      dragId = hit.id;
+      const cur = ensurePos(dragId, { x: hit.x, y: hit.y });
+      dragOff = { x: p.x - cur.x, y: p.y - cur.y };
+      canvas.classList.add('dragging');
+      canvas.setPointerCapture(ev.pointerId);
+      ev.preventDefault();
+    });
+    canvas.addEventListener('pointermove', (ev) => {
+      const p = canvasPoint(ev);
+      if (dragId) {
+        const cur = ensurePos(dragId, p);
+        cur.x = Math.max(40, Math.min(W - 40, p.x - dragOff.x));
+        cur.y = Math.max(40, Math.min(H - 40, p.y - dragOff.y));
+        return;
+      }
+      canvas.classList.toggle('grab', !!hitTest(p));
+    });
+    function endDrag(ev) {
+      if (!dragId) return;
+      dragId = null;
+      canvas.classList.remove('dragging');
+      try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
+    }
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
 
     function setText(id, v) {
       const el = document.getElementById(id);
@@ -417,47 +420,40 @@ PAGE = r"""
       setText('p-workers', gw.worker_count ?? 0);
       setText('p-campus', gw.campus_count ?? 0);
       setText('p-cloud', gw.cloud_count ?? 0);
-      setText('p-queue', `${gw.pending_tasks ?? 0} / ${gw.assigned_tasks ?? 0}`);
+      setText('p-queue', (gw.pending_tasks ?? 0) + ' / ' + (gw.assigned_tasks ?? 0));
       setText('g-pending', gw.pending_tasks ?? 0);
       setText('g-assigned', gw.assigned_tasks ?? 0);
       setText('g-auth', gw.auth ? 'on' : 'off');
-      setText('g-burst', gw.burst_mode || '—');
-      setText('subtitle', `hub ${gw.host || 'gateway'}:${gw.port || 9100} · storage ${gw.storage || 'local'}`);
+      setText('g-burst', gw.burst_mode === 'aws' ? 'cloud' : (gw.burst_mode || '—'));
+      setText('subtitle', ' · ' + (gw.host || 'coordinator') + ':' + (gw.port || 9100));
 
       const ul = document.getElementById('wlist');
       const workers = topo.workers || [];
       if (!workers.length) {
-        ul.innerHTML = '<li><span class="wid">no workers connected</span></li>';
+        ul.innerHTML = '<li class="muted mono">No peers connected</li>';
       } else {
         ul.innerHTML = workers.map(w => {
-          const cls = ['dot', w.kind === 'cloud' ? 'cloud' : '', w.paused ? 'paused' : '', w.load > 0 ? 'busy' : ''].filter(Boolean).join(' ');
-          return `<li>
-            <span class="${cls}"></span>
-            <div>
-              <div class="wid">${w.worker_id}</div>
-              <div style="color:var(--muted);font-size:0.72rem">
-                ${w.kind} · load ${w.load}/${w.max_tasks} · done ${w.tasks_done}
-                · hb ${w.heartbeat_age_sec}s
-              </div>
-            </div>
-            <div class="wid">${w.gpu_count || 0} GPU</div>
-          </li>`;
+          const role = w.kind === 'cloud' ? 'remote' : 'local';
+          return '<li><div class="mono">' + w.worker_id + '</div>' +
+            '<div class="muted">' + role + ' · load ' + w.load + '/' + w.max_tasks +
+            ' · done ' + w.tasks_done + ' · ' + w.effective_threads + ' cpu</div></li>';
         }).join('');
       }
 
       const jobsEl = document.getElementById('jobs');
       const jobs = topo.jobs || [];
       if (!jobs.length) {
-        jobsEl.innerHTML = '<div class="meta">no jobs yet</div>';
+        jobsEl.innerHTML = '<div class="muted">No jobs yet</div>';
       } else {
         jobsEl.innerHTML = jobs.map(j => {
           const pct = j.total ? Math.round(100 * (j.done || 0) / j.total) : 0;
           const failed = j.failed || 0;
-          return `<div class="job ${j.active ? 'active' : ''}">
-            <div class="id">${j.job_id} · ${j.kernel}</div>
-            <div class="meta">${j.policy} · ${j.done}/${j.total} done${failed ? ` · ${failed} failed` : ''}${j.finished ? ' · finished' : ''}</div>
-            <div class="bar"><i class="${failed ? 'fail' : ''}" style="width:${pct}%"></i></div>
-          </div>`;
+          return '<div class="job ' + (j.active ? 'active' : '') + '">' +
+            '<div class="mono">' + j.job_id + ' · ' + j.kernel + '</div>' +
+            '<div class="muted">' + (j.done || 0) + '/' + j.total + ' done' +
+            (failed ? ' · ' + failed + ' failed' : '') +
+            (j.finished ? ' · finished' : '') + '</div>' +
+            '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
         }).join('');
       }
     }
@@ -477,8 +473,7 @@ PAGE = r"""
       }
     }
     setInterval(() => {
-      const ago = lastFetch ? Math.max(0, Math.round((Date.now() - lastFetch) / 1000)) + 's' : '—';
-      setText('p-ago', ago);
+      setText('p-ago', lastFetch ? Math.max(0, Math.round((Date.now() - lastFetch) / 1000)) + 's' : '—');
     }, 500);
     tick();
     setInterval(tick, 1500);
@@ -490,7 +485,7 @@ PAGE = r"""
 
 async def _rpc(msg: dict) -> dict:
     host, port = MASTER
-    reader, writer = await asyncio.open_connection(host, port)
+    reader, writer = await asyncio.open_connection(host, port, limit=MAX_MESSAGE_BYTES)
     try:
         if JOIN_TOKEN and "token" not in msg:
             msg = {**msg, "token": JOIN_TOKEN}
@@ -516,7 +511,6 @@ def status():
             return jsonify({"error": metrics.get("error", "metrics failed")}), 503
         topology = metrics.get("topology")
         if not topology:
-            # older master without topology — synthesize from workers
             workers = metrics.get("workers") or []
             topology = {
                 "gateway": {
@@ -534,16 +528,7 @@ def status():
                     "burst_mode": (metrics.get("burst") or {}).get("mode", "unknown"),
                 },
                 "workers": workers,
-                "links": [
-                    {
-                        "from": w.get("worker_id"),
-                        "to": "gateway",
-                        "kind": w.get("kind"),
-                        "active": int(w.get("load") or 0) > 0,
-                        "paused": bool(w.get("paused")),
-                    }
-                    for w in workers
-                ],
+                "links": [],
                 "jobs": [],
                 "queue": {"pending": [], "assigned": []},
                 "gcs": {},
@@ -555,10 +540,11 @@ def status():
                 job = None
         except Exception:
             job = None
-        return jsonify({"topology": topology, "metrics": {
-            "burst": metrics.get("burst"),
-            "workers": metrics.get("workers"),
-        }, "job": job})
+        return jsonify({
+            "topology": topology,
+            "metrics": {"burst": metrics.get("burst"), "workers": metrics.get("workers")},
+            "job": job,
+        })
     except Exception as exc:
         return jsonify({"error": str(exc)}), 503
 
