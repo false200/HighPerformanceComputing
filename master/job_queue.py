@@ -61,17 +61,24 @@ class JobIntakeQueue:
             raise RuntimeError(
                 "RabbitMQ intake requires pika — pip install pika"
             ) from exc
-        try:
-            params = pika.URLParameters(url)
-            self._rabbit = pika.BlockingConnection(params)
-            ch = self._rabbit.channel()
-            ch.queue_declare(queue=self._queue_name, durable=True)
-            self._channel = ch
-        except Exception as exc:
-            raise RuntimeError(
-                f"cannot connect to RabbitMQ at {url}: {exc}. "
-                "Install/start the broker before launching the master."
-            ) from exc
+        params = pika.URLParameters(url)
+        last_exc: Exception | None = None
+        for attempt in range(1, 31):
+            try:
+                self._rabbit = pika.BlockingConnection(params)
+                ch = self._rabbit.channel()
+                ch.queue_declare(queue=self._queue_name, durable=True)
+                self._channel = ch
+                if attempt > 1:
+                    print(f"[queue] RabbitMQ connected on attempt {attempt}", flush=True)
+                return
+            except Exception as exc:  # noqa: BLE001 — retry until broker ready
+                last_exc = exc
+                time.sleep(1.0)
+        raise RuntimeError(
+            f"cannot connect to RabbitMQ at {url}: {last_exc}. "
+            "Install/start the broker before launching the master."
+        ) from last_exc
 
     def enqueue(self, payload: Dict[str, Any], user_id: Optional[str] = None) -> QueuedJob:
         if user_id:
