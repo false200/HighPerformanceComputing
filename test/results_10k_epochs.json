@@ -1,0 +1,18 @@
+{
+  "role": "user",
+  "epochs": 10000,
+  "package_id": "pkg-cc024bb74430",
+  "job_id": "c14732268917",
+  "done": 6,
+  "failed": 0,
+  "merged_model": {
+    "weights": [3.56297486469571, 14.88303896781918, 12.362853837099044, -0.2975793428745283],
+    "bias": 49.01136609438427,
+    "features": ["sqft_100", "bedrooms", "bathrooms", "age_years"],
+    "shards": 6
+  },
+  "generator_true_approx": {
+    "weights_target": [3.5, 15.0, 12.0, -0.35],
+    "bias_target": 50.0
+  }
+}

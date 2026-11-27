@@ -40,9 +40,21 @@ def _wait_port(host: str, port: int, timeout: float = 15.0) -> None:
 
 def test_end_to_end_campus_job(ensure_binary, tmp_path):
     """Start master + 1 campus worker, submit batch job, wait for completion."""
-    env = {**dict(**{k: v for k, v in __import__("os").environ.items()}), "PYTHONPATH": str(ROOT)}
+    import yaml
+
+    cfg_path = tmp_path / "integration.yaml"
+    cfg = yaml.safe_load((ROOT / "config" / "default.yaml").read_text(encoding="utf-8"))
+    cfg["queue"] = {"backend": "test", "max_running_jobs": 4}
+    cfg["logging"] = {"dir": str(tmp_path / "logs"), "metrics_csv": str(tmp_path / "m.csv")}
+    cfg["storage"] = {"backend": "local", "local_root": str(tmp_path / "store")}
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    env = {
+        **dict(**{k: v for k, v in __import__("os").environ.items()}),
+        "PYTHONPATH": str(ROOT),
+        "HPC_ALLOW_TEST_QUEUE": "1",
+    }
     master = subprocess.Popen(
-        [sys.executable, "-m", "master", "--config", str(ROOT / "config" / "default.yaml")],
+        [sys.executable, "-m", "master", "--config", str(cfg_path)],
         cwd=str(ROOT),
         env=env,
         stdout=subprocess.DEVNULL,

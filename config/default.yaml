@@ -45,6 +45,7 @@ burst:
   aws_subnet: "subnet-PLACEHOLDER"
   worker_image: "hpc-grid-worker:latest"
 
+# Built-in OpenMP demos only. ML / user algorithms arrive via upload_job packages.
 workloads:
   heat2d:
     grid: 128
@@ -56,16 +57,16 @@ workloads:
   irregular:
     tasks: 24
     max_work: 50000
-  logreg:
-    n_samples: 400
-    n_features: 8
-    epochs: 25
-    lr: 0.05
-  linreg:
-    n_samples: 400
-    n_features: 8
-    epochs: 30
-    lr: 0.02
+
+# Job intake is ALWAYS RabbitMQ (required). Start the broker before the master.
+queue:
+  backend: "rabbitmq"
+  max_running_jobs: 4
+  rabbitmq_url: "amqp://guest:guest@localhost:5672/"
+  rabbitmq_queue: "lattice.jobs"
+
+users:
+  heartbeat_timeout_sec: 20.0
 
 logging:
   dir: "data/logs"

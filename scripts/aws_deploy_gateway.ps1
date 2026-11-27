@@ -62,7 +62,10 @@ $USERDATA = @"
 #!/bin/bash
 set -euo pipefail
 dnf -y update || yum -y update
-dnf -y install git gcc-c++ python3 python3-pip libgomp || yum -y install git gcc-c++ python3 python3-pip
+dnf -y install git gcc-c++ python3 python3-pip libgomp rabbitmq-server || yum -y install git gcc-c++ python3 python3-pip rabbitmq-server
+systemctl enable --now rabbitmq-server || service rabbitmq-server start || true
+# wait for AMQP
+for i in `$(seq 1 30); do rabbitmq-diagnostics -q ping && break; sleep 1; done
 cd /opt
 rm -rf hpc-grid
 git clone "$RepoUrl" hpc-grid
@@ -84,12 +87,11 @@ ip = os.environ.get("PUBLIC_IP", "")
 if ip:
     t = re.sub(r"advertise_host:.*", f'advertise_host: "{ip}"', t)
     t = re.sub(r"aws_master_host:.*", f'aws_master_host: "{ip}"', t)
-t = re.sub(r'backend:\s*"s3"', 'backend: "local"', t)
 p.write_text(t)
 PY
 nohup env HPC_JOIN_TOKEN='$TokenForBash' PYTHONPATH=/opt/hpc-grid python3 -m master --config "`$CFG" >/var/log/hpc-master.log 2>&1 &
 nohup env HPC_JOIN_TOKEN='$TokenForBash' PYTHONPATH=/opt/hpc-grid python3 dashboard/app.py --master 127.0.0.1:9100 --port 8080 >/var/log/hpc-dash.log 2>&1 &
-echo "HPC gateway started cfg=`$CFG" >> /var/log/hpc-master.log
+echo "HPC gateway started cfg=`$CFG rabbitmq=on" >> /var/log/hpc-master.log
 "@
 
 $Tmp = [System.IO.Path]::GetTempFileName() + ".sh"

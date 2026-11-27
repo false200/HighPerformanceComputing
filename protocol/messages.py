@@ -20,6 +20,9 @@ class MessageType(str, Enum):
     JOB_STATUS = "JOB_STATUS"
     PACKAGE_PUT = "PACKAGE_PUT"  # user uploads code+data to live platform
     PACKAGE_GET = "PACKAGE_GET"
+    USER_HELLO = "USER_HELLO"  # job submitter joins console
+    USER_HEARTBEAT = "USER_HEARTBEAT"
+    USER_BYE = "USER_BYE"
     FORCE_BURST = "FORCE_BURST"
     METRICS = "METRICS"
     ERROR = "ERROR"

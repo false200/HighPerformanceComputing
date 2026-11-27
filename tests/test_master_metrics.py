@@ -1,10 +1,12 @@
 from pathlib import Path
 
 from master.burst import BurstController, CloudVM
+from master.job_queue import JobIntakeQueue
 from master.metrics import MetricsCollector, RunMetrics
 from master.scheduler import Scheduler
 from master.server import MasterServer
 from master.storage import ObjectStore
+from master.users import UserRegistry
 
 
 def _server(tmp_path):
@@ -21,6 +23,8 @@ def _server(tmp_path):
     server.cfg = cfg
     server.project_root = Path(".")
     server.scheduler = Scheduler()
+    server.users = UserRegistry()
+    server.job_queue = JobIntakeQueue({"backend": "test", "max_running_jobs": 4})
     server.store = ObjectStore(cfg["storage"])
     server.metrics = MetricsCollector(cfg["logging"]["dir"], cfg["logging"]["metrics_csv"])
     server.burst = BurstController(cfg, Path("."))

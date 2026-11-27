@@ -1,0 +1,33 @@
+{
+  "role": "user",
+  "submitted_from": "test/",
+  "platform": "13.217.224.71:9100",
+  "package_id": "pkg-c5808c32ef15",
+  "job_id": "5399495e6d43",
+  "kernel": "userjob",
+  "model_type": "linear_regression",
+  "epochs": 100,
+  "chunks": 6,
+  "dataset": "test/data.csv",
+  "label": "price_k",
+  "features": ["sqft_100", "bedrooms", "bathrooms", "age_years"],
+  "status": "finished",
+  "done": 6,
+  "failed": 0,
+  "merged_model": {
+    "weights": [
+      4.069934740537467,
+      17.38017749565394,
+      18.902227662837312,
+      -0.17921060127685973
+    ],
+    "bias": 13.304703497080745,
+    "shards": 6,
+    "checksum": 657.5914198252113
+  },
+  "generator_true_approx": {
+    "note": "data was generated near price ≈ 50 + 3.5*sqft_100 + 15*beds + 12*baths - 0.35*age",
+    "weights_target": [3.5, 15.0, 12.0, -0.35],
+    "bias_target": 50.0
+  }
+}

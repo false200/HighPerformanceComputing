@@ -10,6 +10,7 @@ def test_topology_snapshot_shape(tmp_path):
         "storage": {"backend": "local", "local_root": str(tmp_path)},
         "logging": {"dir": str(tmp_path), "metrics_csv": str(tmp_path / "m.csv")},
         "burst": {"mode": "local_sim", "max_cloud_vms": 1},
+        "queue": {"backend": "test", "max_running_jobs": 4},
     }
     m = MasterServer(cfg, tmp_path)
     m.scheduler.register_worker(
@@ -20,7 +21,10 @@ def test_topology_snapshot_shape(tmp_path):
     topo = m._topology_snapshot()
     assert topo["gateway"]["worker_count"] == 1
     assert topo["gateway"]["campus_count"] == 1
+    assert topo["gateway"]["user_count"] == 0
     assert len(topo["workers"]) == 1
+    assert topo["users"] == []
     assert topo["links"][0]["from"] == "c1"
     assert topo["jobs"]
     assert topo["gateway"]["assigned_tasks"] >= 1
+    assert "intake" in topo

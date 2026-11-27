@@ -45,11 +45,6 @@ async def submit_and_wait(args: argparse.Namespace) -> int:
         "deadline_sec": args.deadline,
         "token": tok,
     }
-    for key in ("dataset", "label_col", "epochs", "lr", "n_rows", "n_samples", "n_features"):
-        val = getattr(args, key, None)
-        if val is None or val == "":
-            continue
-        payload[key] = val
     sub = await rpc(host, port, make(MessageType.JOB_SUBMIT, **payload))
     if not sub or not sub.get("ok"):
         print("submit failed:", sub)
@@ -81,7 +76,7 @@ def main() -> None:
     p.add_argument(
         "--kernel",
         default="heat2d",
-        choices=["heat2d", "batch", "irregular", "logreg", "linreg"],
+        choices=["heat2d", "batch", "irregular"],
     )
     p.add_argument("--policy", default="hybrid", choices=["hybrid", "campus_only", "cloud_only"])
     p.add_argument("--chunks", type=int, default=8)
@@ -89,13 +84,6 @@ def main() -> None:
     p.add_argument("--timeout", type=float, default=180.0)
     p.add_argument("--force-burst", action="store_true")
     p.add_argument("--token", default="", help="Operator/join token (or HPC_JOIN_TOKEN)")
-    p.add_argument("--dataset", default="", help="CSV path relative to repo (logreg/linreg)")
-    p.add_argument("--label-col", dest="label_col", default="", help="Label column name")
-    p.add_argument("--epochs", type=int, default=None)
-    p.add_argument("--lr", type=float, default=None)
-    p.add_argument("--n-rows", dest="n_rows", type=int, default=None)
-    p.add_argument("--n-samples", dest="n_samples", type=int, default=None)
-    p.add_argument("--n-features", dest="n_features", type=int, default=None)
     args = p.parse_args()
     raise SystemExit(asyncio.run(submit_and_wait(args)))
 

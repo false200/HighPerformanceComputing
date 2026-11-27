@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List
 
 
@@ -41,5 +42,22 @@ def validate_config(cfg: Dict[str, Any]) -> List[str]:
     ):
         # env may still satisfy at runtime — warn via empty check in server
         pass
+
+    queue = cfg.get("queue") or {}
+    if queue:
+        qb = str(queue.get("backend") or "rabbitmq").lower()
+        allow_test = os.environ.get("HPC_ALLOW_TEST_QUEUE", "").strip().lower() in ("1", "true", "yes")
+        if qb == "test" and allow_test:
+            pass
+        elif qb != "rabbitmq":
+            errors.append("queue.backend must be rabbitmq (memory intake removed)")
+        if "max_running_jobs" in queue:
+            try:
+                if int(queue["max_running_jobs"]) < 1:
+                    errors.append("queue.max_running_jobs must be >= 1")
+            except Exception:
+                errors.append("queue.max_running_jobs must be int")
+        if qb == "rabbitmq" and not (queue.get("rabbitmq_url") or "").strip():
+            errors.append("queue.rabbitmq_url required")
 
     return errors

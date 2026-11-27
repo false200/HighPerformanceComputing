@@ -29,10 +29,11 @@ owner_qos:
   idle_only: false
   below_normal_priority: true
 
+# Packages + checkpoints on local disk (S3 optional if instance role/creds exist).
 storage:
-  backend: "s3"            # durable checkpoints on reclaim
+  backend: "local"
   local_root: "data"
-  s3_bucket: "hpc-grid-checkpoints"   # change to your bucket
+  s3_bucket: "hpc-grid-checkpoints"
   s3_prefix: "runs/"
   s3_endpoint_url: null
 
@@ -57,16 +58,16 @@ workloads:
   irregular:
     tasks: 24
     max_work: 50000
-  logreg:
-    n_samples: 400
-    n_features: 8
-    epochs: 25
-    lr: 0.05
-  linreg:
-    n_samples: 400
-    n_features: 8
-    epochs: 30
-    lr: 0.02
+
+# RabbitMQ is mandatory for intake under concurrent users.
+queue:
+  backend: "rabbitmq"
+  max_running_jobs: 8
+  rabbitmq_url: "amqp://guest:guest@localhost:5672/"
+  rabbitmq_queue: "lattice.jobs"
+
+users:
+  heartbeat_timeout_sec: 25.0
 
 logging:
   dir: "data/logs"

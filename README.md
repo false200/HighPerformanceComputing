@@ -25,7 +25,7 @@ py -3 -m master.upload_job `
   --policy campus_only
 ```
 
-**Console:** `http://GATEWAY_IP:8080` (drag nodes on the map)
+**Console:** `http://GATEWAY_IP:8080` — peers **and** connected users show on the map; logout removes the user node. Job intake **requires RabbitMQ**; fair least-load scheduling spreads work across workers. Users upload their own code+data (`upload_job`) — no built-in ML kernels.
 
 ## Deploy gateway once (AWS)
 

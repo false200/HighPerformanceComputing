@@ -1,7 +1,9 @@
-﻿# Run on the HOST laptop (while master is already running).
+# USER / operator entrypoint — submit work to an already-running platform.
+# Does NOT deploy AWS, does NOT start a master, does NOT join as a worker.
+# Deploy once (DeployGateway.bat). Workers join with Connect.bat. You only SubmitJob.
 param(
   [string]$Master = "127.0.0.1:9100",
-  [ValidateSet("heat2d", "batch", "irregular", "logreg", "linreg")]
+  [ValidateSet("heat2d", "batch", "irregular")]
   [string]$Kernel = "heat2d",
   [ValidateSet("campus_only", "hybrid", "cloud_only")]
   [string]$Policy = "campus_only",
@@ -32,9 +34,18 @@ if ($Master -eq "127.0.0.1:9100") {
 }
 
 if (-not $Token) { $Token = $env:HPC_JOIN_TOKEN }
+if (-not $Token -and (Test-Path (Join-Path $Root "key\join_token.txt"))) {
+  $Token = (Get-Content (Join-Path $Root "key\join_token.txt") -Raw).Trim()
+}
 
 Write-Host ""
-Write-Host "Submitting $Kernel job ($Policy, $Chunks chunks) to $Master ..." -ForegroundColor Cyan
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "  HPC Grid — USER submit (platform stays up)" -ForegroundColor Cyan
+Write-Host "============================================" -ForegroundColor Cyan
+Write-Host "Role   : job submitter (not a worker, not deploy)" -ForegroundColor DarkGray
+Write-Host "Target : $Master" -ForegroundColor DarkGray
+Write-Host "Job    : $Kernel · $Policy · $Chunks chunks" -ForegroundColor DarkGray
+Write-Host "Submitting..." -ForegroundColor Cyan
 $clientArgs = @(
   "-3", "-m", "master.client",
   "--master", $Master,

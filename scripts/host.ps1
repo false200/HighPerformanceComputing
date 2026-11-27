@@ -29,10 +29,38 @@ if (-not (Test-Path "$Root\bin\omp_kernels.exe") -and -not (Test-Path "$Root\bin
   Write-Host "[1/4] OpenMP kernels already built." -ForegroundColor Green
 }
 
-Write-Host "[2/4] Checking Python packages..." -ForegroundColor Yellow
+Write-Host "[2/5] Checking Python packages..." -ForegroundColor Yellow
 py -3 -m pip install -r "$Root\requirements.txt" -q
 
-Write-Host "[3/4] Opening firewall port 9100 (may need Admin once)..." -ForegroundColor Yellow
+Write-Host "[3/5] Ensuring RabbitMQ (required job intake)..." -ForegroundColor Yellow
+$rabbitOk = $false
+try {
+  py -3 -c "import pika; pika.BlockingConnection(pika.URLParameters('amqp://guest:guest@localhost:5672/')).close(); print('ok')" | Out-Null
+  if ($LASTEXITCODE -eq 0) { $rabbitOk = $true }
+} catch {}
+if (-not $rabbitOk) {
+  $docker = Get-Command docker -ErrorAction SilentlyContinue
+  if ($docker) {
+    $existing = docker ps -a --filter "name=lattice-rabbit" --format "{{.Names}}" 2>$null
+    if ($existing -eq "lattice-rabbit") {
+      docker start lattice-rabbit | Out-Null
+    } else {
+      Write-Host "      Starting rabbitmq:3 via Docker (lattice-rabbit)..." -ForegroundColor DarkGray
+      docker run -d --name lattice-rabbit -p 5672:5672 -p 15672:15672 rabbitmq:3-management | Out-Null
+    }
+    Start-Sleep -Seconds 4
+    try {
+      py -3 -c "import pika; pika.BlockingConnection(pika.URLParameters('amqp://guest:guest@localhost:5672/')).close()" | Out-Null
+      if ($LASTEXITCODE -eq 0) { $rabbitOk = $true }
+    } catch {}
+  }
+}
+if (-not $rabbitOk) {
+  throw "RabbitMQ is required. Install RabbitMQ or Docker, then re-run Host.bat (expects amqp://guest:guest@localhost:5672/)."
+}
+Write-Host "      RabbitMQ reachable on localhost:5672" -ForegroundColor Green
+
+Write-Host "[4/5] Opening firewall port 9100 (may need Admin once)..." -ForegroundColor Yellow
 try {
   $existing = Get-NetFirewallRule -DisplayName "HPC Grid Master 9100" -ErrorAction SilentlyContinue
   if (-not $existing) {
@@ -52,7 +80,7 @@ if (-not $ips -or $ips.Count -eq 0) {
 }
 
 Write-Host ""
-Write-Host "[4/4] Starting master..." -ForegroundColor Yellow
+Write-Host "[5/5] Starting master..." -ForegroundColor Yellow
 Write-Host ""
 Write-Host "--------------------------------------------" -ForegroundColor Green
 Write-Host "  Tell workers to run Connect.bat" -ForegroundColor Green

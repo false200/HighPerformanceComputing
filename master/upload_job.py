@@ -1,6 +1,7 @@
 """Upload a job package (code + data) to a *live* master, then submit.
 
-This is the user path: no EC2 redeploy, no git pull on the gateway.
+User path: register on the console (visible like a worker), heartbeat while
+waiting, logout on exit — no EC2 redeploy, no git pull on the gateway.
 """
 
 from __future__ import annotations
@@ -49,82 +50,162 @@ def load_files(mapping: Dict[str, str]) -> Dict[str, str]:
     return out
 
 
+async def _heartbeat_loop(host: str, port: int, tok: str, user_id: str, stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        try:
+            await rpc(
+                host,
+                port,
+                make(MessageType.USER_HEARTBEAT, token=tok, user_id=user_id),
+                timeout=10.0,
+            )
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def upload_and_run(args: argparse.Namespace) -> int:
     host, port_s = args.master.split(":")
     port = int(port_s)
     tok = _token(args)
-    files = load_files({
-        args.dataset_name: args.dataset,
-        args.entrypoint: args.train,
-    })
-    meta = {
-        "dataset": args.dataset_name,
-        "entrypoint": args.entrypoint,
-        "label_col": args.label_col,
-        "epochs": args.epochs,
-        "lr": args.lr,
-    }
-    print(f"[user] uploading package to {host}:{port} files={list(files.keys())}")
-    put = await rpc(
-        host,
-        port,
-        make(
-            MessageType.PACKAGE_PUT,
-            token=tok,
-            name=args.name,
-            files=files,
-            meta=meta,
-        ),
-    )
-    if not put or not put.get("ok"):
-        print("package upload failed:", put)
-        return 1
-    package_id = put["package_id"]
-    print(f"[user] stored on platform as {package_id}")
+    user_id: Optional[str] = None
+    stop_hb = asyncio.Event()
+    hb_task: Optional[asyncio.Task] = None
 
-    sub = await rpc(
-        host,
-        port,
-        make(
-            MessageType.JOB_SUBMIT,
-            token=tok,
-            kernel="userjob",
-            policy=args.policy,
-            chunks=args.chunks,
-            deadline_sec=args.deadline,
-            package_id=package_id,
-            dataset=args.dataset_name,
-            entrypoint=args.entrypoint,
-            label_col=args.label_col,
-            epochs=args.epochs,
-            lr=args.lr,
-        ),
-    )
-    if not sub or not sub.get("ok"):
-        print("submit failed:", sub)
-        return 1
-    job_id = sub["job_id"]
-    print(f"[user] job {job_id} tasks={sub.get('tasks')} — waiting for cluster…")
+    try:
+        hello = await rpc(
+            host,
+            port,
+            make(MessageType.USER_HELLO, token=tok, name=args.user_name),
+        )
+        if not hello or not hello.get("ok"):
+            print("user hello failed:", hello)
+            return 1
+        user_id = str(hello["user_id"])
+        print(f"[user] online as {user_id} ({hello.get('name')}) — visible on Lattice")
+        hb_task = asyncio.create_task(_heartbeat_loop(host, port, tok, user_id, stop_hb))
 
-    t0 = time.time()
-    while time.time() - t0 < args.timeout:
-        st = await rpc(host, port, make(MessageType.JOB_STATUS, job_id=job_id, token=tok))
-        if not st:
+        files = load_files({
+            args.dataset_name: args.dataset,
+            args.entrypoint: args.train,
+        })
+        meta = {
+            "dataset": args.dataset_name,
+            "entrypoint": args.entrypoint,
+            "label_col": args.label_col,
+            "epochs": args.epochs,
+            "lr": args.lr,
+        }
+        print(f"[user] uploading package to {host}:{port} files={list(files.keys())}")
+        put = await rpc(
+            host,
+            port,
+            make(
+                MessageType.PACKAGE_PUT,
+                token=tok,
+                name=args.name,
+                files=files,
+                meta=meta,
+            ),
+        )
+        if not put or not put.get("ok"):
+            print("package upload failed:", put)
+            return 1
+        package_id = put["package_id"]
+        print(f"[user] stored on platform as {package_id}")
+
+        sub = await rpc(
+            host,
+            port,
+            make(
+                MessageType.JOB_SUBMIT,
+                token=tok,
+                user_id=user_id,
+                kernel="userjob",
+                policy=args.policy,
+                chunks=args.chunks,
+                deadline_sec=args.deadline,
+                package_id=package_id,
+                dataset=args.dataset_name,
+                entrypoint=args.entrypoint,
+                label_col=args.label_col,
+                epochs=args.epochs,
+                lr=args.lr,
+            ),
+        )
+        if not sub or not sub.get("ok"):
+            print("submit failed:", sub)
+            return 1
+
+        job_id = sub.get("job_id")
+        if sub.get("queued") and not job_id:
+            print(
+                f"[user] intake queued {sub.get('queue_id')} position={sub.get('position')} "
+                f"— waiting for capacity…",
+                flush=True,
+            )
+        else:
+            print(f"[user] job {job_id} tasks={sub.get('tasks')} — waiting for cluster…")
+
+        t0 = time.time()
+        while time.time() - t0 < args.timeout:
+            st = await rpc(
+                host,
+                port,
+                make(
+                    MessageType.JOB_STATUS,
+                    token=tok,
+                    user_id=user_id,
+                    job_id=job_id,
+                ),
+            )
+            if not st:
+                await asyncio.sleep(0.5)
+                continue
+            if st.get("type") == MessageType.ERROR.value and not job_id:
+                await asyncio.sleep(0.5)
+                continue
+            if st.get("queued") and not st.get("job_id"):
+                print(f"queued depth≈{st.get('position')}…", flush=True)
+                await asyncio.sleep(0.8)
+                continue
+            if st.get("job_id"):
+                job_id = st.get("job_id")
+            print(f"progress {st.get('done')}/{st.get('total')}", flush=True)
+            if st.get("finished"):
+                print(json.dumps(st, indent=2))
+                return 0
             await asyncio.sleep(0.5)
-            continue
-        print(f"progress {st.get('done')}/{st.get('total')}", flush=True)
-        if st.get("finished"):
-            print(json.dumps(st, indent=2))
-            return 0
-        await asyncio.sleep(0.5)
-    print("timeout waiting for job")
-    return 2
+        print("timeout waiting for job")
+        return 2
+    finally:
+        stop_hb.set()
+        if hb_task:
+            try:
+                await asyncio.wait_for(hb_task, timeout=2.0)
+            except Exception:
+                hb_task.cancel()
+        if user_id:
+            try:
+                await rpc(
+                    host,
+                    port,
+                    make(MessageType.USER_BYE, token=tok, user_id=user_id),
+                    timeout=10.0,
+                )
+                print(f"[user] logout {user_id}")
+            except Exception as exc:
+                print(f"[user] logout failed: {exc}")
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Upload job package to live HPC gateway and run it")
     p.add_argument("--master", default="127.0.0.1:9100")
     p.add_argument("--token", default="")
+    p.add_argument("--user-name", default="submitter")
     p.add_argument("--name", default="logistic-regression")
     p.add_argument("--train", default="examples/logistic_regression/train.py")
     p.add_argument("--dataset", default="examples/logistic_regression/data/exam_pass.csv")

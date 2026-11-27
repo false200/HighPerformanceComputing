@@ -4,16 +4,33 @@ You are a **job submitter**, not a worker and not a deployer.
 
 1. Gateway already running on AWS (`DeployGateway` once).
 2. Workers already joined (`Connect.bat`).
-3. You submit this job; AWS splits the dataset, workers train shards, master merges the model.
+3. You upload this package; AWS shards the CSV, workers run *your* `train.py`, master merges shard outputs.
 
 ## Files
 
 | Path | Role |
 |------|------|
-| `data/exam_pass.csv` | Training dataset (1200 rows) |
-| `job.yaml` | Job request (kernel, dataset, shards) |
+| `data/exam_pass.csv` | Training dataset |
+| `train.py` | Your code (`train_shard`) |
+| `job.yaml` | Notes for upload_job flags |
 | `generate_dataset.py` | Regenerates the CSV if needed |
-| `../../SubmitLogReg.bat` | One-click user submit |
+
+## Submit
+
+```powershell
+$env:PYTHONPATH = (Get-Location).Path
+$env:HPC_JOIN_TOKEN = (Get-Content .\key\join_token.txt -Raw).Trim()
+py -3 -m master.upload_job `
+  --master "GATEWAY_IP:9100" `
+  --token $env:HPC_JOIN_TOKEN `
+  --train examples/logistic_regression/train.py `
+  --dataset examples/logistic_regression/data/exam_pass.csv `
+  --dataset-name data.csv `
+  --entrypoint train.py `
+  --label-col passed `
+  --epochs 40 `
+  --policy campus_only
+```
 
 ## Features → label
 

@@ -41,6 +41,7 @@ PAGE = r"""
       --gateway: #0f3d2e;
       --peer: #1c4b6e;
       --cloud: #4a5568;
+      --user: #6b3f1d;
       --live: #c9a227;
       --danger: #9b2c2c;
       --ok: #0f3d2e;
@@ -183,15 +184,17 @@ PAGE = r"""
       <h1 class="brand">Lattice<span id="subtitle">cluster console</span></h1>
       <div class="stats">
         <div>peers <b id="p-workers">—</b></div>
+        <div>users <b id="p-users">—</b></div>
         <div>local <b id="p-campus">—</b></div>
         <div>remote <b id="p-cloud">—</b></div>
-        <div>queue <b id="p-queue">—</b></div>
+        <div>tasks <b id="p-queue">—</b></div>
+        <div>intake <b id="p-intake">—</b></div>
         <div>sync <b id="p-ago">—</b></div>
       </div>
     </header>
     <section class="stage">
       <canvas id="topo"></canvas>
-      <div class="hint">Drag nodes to rearrange · gold pulse = active work</div>
+      <div class="hint">Drag nodes · gold = active work · brown = users</div>
     </section>
     <aside>
       <section class="block">
@@ -199,9 +202,15 @@ PAGE = r"""
         <div class="grid2">
           <div class="metric"><div class="n" id="g-pending">0</div><div class="l">waiting</div></div>
           <div class="metric"><div class="n" id="g-assigned">0</div><div class="l">running</div></div>
+          <div class="metric"><div class="n" id="g-jobs">0</div><div class="l">jobs live</div></div>
+          <div class="metric"><div class="n" id="g-intake">0</div><div class="l">intake</div></div>
           <div class="metric"><div class="n" id="g-auth">—</div><div class="l">auth</div></div>
           <div class="metric"><div class="n" id="g-burst">—</div><div class="l">overflow</div></div>
         </div>
+      </section>
+      <section class="block">
+        <h2>Users</h2>
+        <ul class="nodes" id="ulist"><li class="muted mono">No users connected</li></ul>
       </section>
       <section class="block">
         <h2>Peers</h2>
@@ -262,11 +271,25 @@ PAGE = r"""
       });
     }
 
+    function layoutUsers(users) {
+      const hubP = ensurePos('gateway', defaultHub());
+      const n = users.length || 1;
+      const R = Math.min(W, H) * 0.22;
+      return users.map((u, i) => {
+        // left arc so users sit opposite the worker ring
+        const a = Math.PI / 2 + ((i + 0.5) / n) * Math.PI;
+        const fb = { x: hubP.x + Math.cos(a) * R, y: hubP.y + Math.sin(a) * R };
+        const p = ensurePos(u.user_id, fb);
+        return { ...u, x: p.x, y: p.y };
+      });
+    }
+
     function drawLink(a, b, active, kind, paused, now) {
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      const col = paused ? '#9aa3ad' : (kind === 'cloud' ? '#4a5568' : '#1c4b6e');
+      const col = paused ? '#9aa3ad'
+        : (kind === 'user' ? '#6b3f1d' : (kind === 'cloud' ? '#4a5568' : '#1c4b6e'));
       ctx.strokeStyle = col;
       ctx.globalAlpha = active ? 0.85 : 0.28;
       ctx.lineWidth = active ? 2.2 : 1.2;
@@ -333,6 +356,7 @@ PAGE = r"""
       const topo = state && state.topology ? state.topology : null;
       const hubP = ensurePos('gateway', defaultHub());
       const workers = topo ? layoutWorkers(topo.workers || []) : [];
+      const users = topo ? layoutUsers(topo.users || []) : [];
 
       if (!topo) {
         drawNode(hubP.x, hubP.y, 'Coordinator', 'waiting…', '#0f3d2e', false);
@@ -343,6 +367,10 @@ PAGE = r"""
 
       for (const w of workers) {
         drawLink(w, hubP, !!w.load, w.kind, !!w.paused, now);
+      }
+      for (const u of users) {
+        const busy = ['waiting', 'submitting', 'queued'].indexOf(u.status) >= 0;
+        drawLink(u, hubP, busy, 'user', false, now);
       }
       const host = (topo.gateway && topo.gateway.host) ? String(topo.gateway.host) : 'live';
       drawNode(
@@ -361,6 +389,13 @@ PAGE = r"""
         const color = w.paused ? '#9aa3ad' : (w.kind === 'cloud' ? '#4a5568' : '#1c4b6e');
         drawNode(w.x, w.y, short, sub, color, w.load > 0);
         nodeHit.push({ id: w.worker_id, x: w.x, y: w.y, r: 30 });
+      }
+      for (const u of users) {
+        const short = (u.name || u.user_id || 'user').slice(0, 14);
+        const sub = (u.status || 'online') + (u.job_id ? ' · ' + String(u.job_id).slice(0, 10) : '');
+        const busy = ['waiting', 'submitting', 'queued'].indexOf(u.status) >= 0;
+        drawNode(u.x, u.y, short, sub, '#6b3f1d', busy);
+        nodeHit.push({ id: u.user_id, x: u.x, y: u.y, r: 30 });
       }
       requestAnimationFrame(render);
     }
@@ -417,15 +452,33 @@ PAGE = r"""
 
     function paintSidebar(topo) {
       const gw = topo.gateway || {};
+      const intake = topo.intake || {};
       setText('p-workers', gw.worker_count ?? 0);
+      setText('p-users', gw.user_count ?? 0);
       setText('p-campus', gw.campus_count ?? 0);
       setText('p-cloud', gw.cloud_count ?? 0);
       setText('p-queue', (gw.pending_tasks ?? 0) + ' / ' + (gw.assigned_tasks ?? 0));
+      setText('p-intake', (gw.intake_depth ?? intake.depth ?? 0) + ' · ' + (gw.queue_backend || intake.backend || 'mem'));
       setText('g-pending', gw.pending_tasks ?? 0);
       setText('g-assigned', gw.assigned_tasks ?? 0);
+      setText('g-jobs', gw.running_jobs ?? 0);
+      setText('g-intake', gw.intake_depth ?? intake.depth ?? 0);
       setText('g-auth', gw.auth ? 'on' : 'off');
       setText('g-burst', gw.burst_mode === 'aws' ? 'cloud' : (gw.burst_mode || '—'));
       setText('subtitle', ' · ' + (gw.host || 'coordinator') + ':' + (gw.port || 9100));
+
+      const userList = document.getElementById('ulist');
+      const users = topo.users || [];
+      if (!users.length) {
+        userList.innerHTML = '<li class="muted mono">No users connected</li>';
+      } else {
+        userList.innerHTML = users.map(u => {
+          return '<li><div class="mono">' + (u.name || 'user') + ' · ' + u.user_id + '</div>' +
+            '<div class="muted">' + (u.status || 'online') +
+            (u.job_id ? ' · job ' + u.job_id : '') +
+            ' · ' + (u.connected_for_sec ?? 0) + 's</div></li>';
+        }).join('');
+      }
 
       const ul = document.getElementById('wlist');
       const workers = topo.workers || [];
@@ -442,10 +495,21 @@ PAGE = r"""
 
       const jobsEl = document.getElementById('jobs');
       const jobs = topo.jobs || [];
-      if (!jobs.length) {
+      const waiting = (intake.waiting || []);
+      let html = '';
+      if (waiting.length) {
+        html += waiting.map(q => {
+          return '<div class="job">' +
+            '<div class="mono">intake ' + q.queue_id + '</div>' +
+            '<div class="muted">queued · ' + (q.kernel || '?') +
+            (q.user_id ? ' · ' + q.user_id : '') +
+            ' · ' + (q.wait_sec ?? 0) + 's</div></div>';
+        }).join('');
+      }
+      if (!jobs.length && !waiting.length) {
         jobsEl.innerHTML = '<div class="muted">No jobs yet</div>';
       } else {
-        jobsEl.innerHTML = jobs.map(j => {
+        html += jobs.map(j => {
           const pct = j.total ? Math.round(100 * (j.done || 0) / j.total) : 0;
           const failed = j.failed || 0;
           return '<div class="job ' + (j.active ? 'active' : '') + '">' +
@@ -455,6 +519,7 @@ PAGE = r"""
             (j.finished ? ' · finished' : '') + '</div>' +
             '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
         }).join('');
+        jobsEl.innerHTML = html;
       }
     }
 

@@ -277,27 +277,29 @@ class Scheduler:
         if not pool:
             return assignments
 
-        place = placement
-        if place is None and self.pending:
-            job = self.jobs.get(self.task_index[self.pending[0]].job_id)
-            place = job.placement if job else "spread"
-        place = place or "spread"
+        place = placement or "spread"
         pool = self._sort_pool(pool, place)
 
-        # One new task per worker per tick (fair dispatch); resource-aware admission.
+        # Fair multi-job order: round-robin across jobs so one user cannot starve others.
+        pending_ids = self._fair_pending_order()
+
         used_workers: set[str] = set()
         still_pending: List[str] = []
-        for tid in list(self.pending):
-            task = self.task_index[tid]
+        for tid in pending_ids:
+            task = self.task_index.get(tid)
+            if not task:
+                continue
             placed = False
-            for w in pool:
-                if w.worker_id in used_workers:
-                    continue
-                if self._load(w) >= self._max_concurrent(w):
-                    continue
+            # least-load among eligible with capacity (intelligent load balance)
+            candidates = [
+                w for w in pool
+                if w.worker_id not in used_workers
+                and self._load(w) < self._max_concurrent(w)
+                and (w.node_resources or self._refresh_node_resources(w)).can_fit(task.resources)
+            ]
+            candidates.sort(key=lambda w: (self._load(w), -self._effective_cores(w)))
+            for w in candidates:
                 nr = w.node_resources or self._refresh_node_resources(w)
-                if not nr.can_fit(task.resources):
-                    continue
                 task.state = TaskState.ASSIGNED
                 task.worker_id = w.worker_id
                 task.attempts += 1
@@ -317,6 +319,32 @@ class Scheduler:
                 still_pending.append(tid)
         self.pending = still_pending
         return assignments
+
+    def _fair_pending_order(self) -> List[str]:
+        """Interleave pending tasks by job_id (round-robin) for multi-user fairness."""
+        buckets: Dict[str, List[str]] = {}
+        order_jobs: List[str] = []
+        for tid in self.pending:
+            task = self.task_index.get(tid)
+            if not task:
+                continue
+            jid = task.job_id
+            if jid not in buckets:
+                buckets[jid] = []
+                order_jobs.append(jid)
+            buckets[jid].append(tid)
+        out: List[str] = []
+        while any(buckets.values()):
+            for jid in order_jobs:
+                if buckets[jid]:
+                    out.append(buckets[jid].pop(0))
+        return out
+
+    def running_job_count(self) -> int:
+        return sum(1 for j in self.jobs.values() if j.finished_at is None)
+
+    def unfinished_job_ids(self) -> List[str]:
+        return [j.job_id for j in self.jobs.values() if j.finished_at is None]
 
     def complete_task(
         self,
@@ -362,8 +390,8 @@ class Scheduler:
             job.checksum = sum(
                 float(t.result.get("checksum", 0.0)) for t in job.tasks if t.result
             )
-            if job.kernel in ("logreg", "linreg", "userjob"):
-                job.model = average_ml_model(job)
+            if job.kernel == "userjob":
+                job.model = merge_user_shard_results(job)
         return job, recovery, ref
 
     def checkpoint_task(
@@ -489,12 +517,14 @@ class Scheduler:
         return sum(1 for w in self.workers.values() if w.kind == "cloud" and not w.paused)
 
 
-def average_ml_model(job: Job) -> Optional[Dict[str, Any]]:
-    """Average per-shard weights (simple parameter-server merge)."""
+def merge_user_shard_results(job: Job) -> Optional[Dict[str, Any]]:
+    """Optional merge when user shards return compatible ``weights`` vectors."""
     rows = [t.result for t in job.tasks if t.result and "weights" in t.result]
     if not rows:
         return None
     n = len(rows[0]["weights"])
+    if any(len(r.get("weights") or []) != n for r in rows):
+        return {"kernel": job.kernel, "shards": len(rows), "note": "heterogeneous shard outputs"}
     avg_w = [
         sum(float(r["weights"][j]) for r in rows) / len(rows)
         for j in range(n)
@@ -506,9 +536,13 @@ def average_ml_model(job: Job) -> Optional[Dict[str, Any]]:
         "bias": avg_b,
         "shards": len(rows),
     }
-    if job.kernel in ("logreg", "userjob") or any("train_acc" in r for r in rows):
+    if any("train_acc" in r for r in rows):
         out["mean_train_acc"] = sum(float(r.get("train_acc", 0.0)) for r in rows) / len(rows)
         out["mean_loss"] = sum(float(r.get("loss", 0.0)) for r in rows) / len(rows)
-    elif job.kernel == "linreg":
+    if any("mse" in r for r in rows):
         out["mean_mse"] = sum(float(r.get("mse", 0.0)) for r in rows) / len(rows)
     return out
+
+
+# Back-compat alias for older tests/imports
+average_ml_model = merge_user_shard_results

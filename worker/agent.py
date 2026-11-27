@@ -74,38 +74,24 @@ def memory_mb() -> int:
     return 4096
 
 
-def run_ml_kernel(kernel: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Sharded logistic / linear regression (Python stdlib trainer)."""
-    from kernels.ml_train import run as ml_run
-
-    payload = dict(params)
-    payload["kernel"] = kernel
-    return ml_run(payload)
-
-
 def run_userjob(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute user-uploaded train.py on a CSV shard delivered by the master."""
+    """Execute user-uploaded entrypoint on a CSV shard (subprocess-isolated)."""
     import time
+
+    from worker.user_runtime import run_user_shard
 
     src = str(params.get("train_source") or "")
     header_line = str(params.get("csv_header") or "")
     shard_rows = list(params.get("shard_rows") or [])
-    if not src.strip():
-        raise RuntimeError("userjob missing train_source")
-    if not header_line or not shard_rows:
-        raise RuntimeError("userjob missing csv shard")
-    header = next(csv.reader([header_line]))
-    ns: Dict[str, Any] = {}
-    exec(compile(src, "<userjob:train.py>", "exec"), ns, ns)  # noqa: S102 — intentional user job runner
-    fn = ns.get("train_shard")
-    if not callable(fn):
-        raise RuntimeError("train.py must define train_shard(header, rows, params)")
+    header = next(csv.reader([header_line])) if header_line else []
+    timeout = float(params.get("userjob_timeout_sec") or 180.0)
     t0 = time.perf_counter()
-    out = fn(header, shard_rows, dict(params))
-    if not isinstance(out, dict):
-        raise RuntimeError("train_shard must return a dict")
+    out = run_user_shard(src, header, shard_rows, dict(params), timeout_sec=timeout)
     out.setdefault("kernel", "userjob")
-    out.setdefault("checksum", float(out.get("train_acc") or 0.0))
+    if "checksum" not in out:
+        out["checksum"] = float(
+            out.get("mean_abs_c") or out.get("train_acc") or out.get("mse") or 0.0
+        )
     out["elapsed_ms"] = (time.perf_counter() - t0) * 1000.0
     out["shard"] = int(params.get("shard", 0))
     out["package_id"] = params.get("package_id")
@@ -121,7 +107,9 @@ def run_kernel(
     if kernel == "userjob":
         return run_userjob(params)
     if kernel in ("logreg", "linreg"):
-        return run_ml_kernel(kernel, params)
+        raise RuntimeError(
+            f"built-in kernel {kernel!r} removed — upload a package via userjob"
+        )
 
     binary = find_kernel_binary()
     threads = int(params.get("threads") or 0)

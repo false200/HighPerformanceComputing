@@ -24,3 +24,6 @@ qa/
 config/worker_local.yaml
 # Local AWS deploy output (instance id / public IP)
 config/aws_gateway_local.yaml
+# EC2 private keys — never commit
+key/
+*.pem

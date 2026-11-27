@@ -22,9 +22,11 @@ from master.burst import BurstController
 from master.config_validate import validate_config
 from master.health import HealthServer
 from master.metrics import MetricsCollector, RunMetrics
+from master.job_queue import JobIntakeQueue
 from master.packages import PackageStore
 from master.scheduler import Job, Scheduler, WorkerInfo
 from master.storage import ObjectStore
+from master.users import UserRegistry
 from protocol.messages import MAX_MESSAGE_BYTES, MessageType, decode, encode, make
 
 
@@ -111,55 +113,9 @@ def partition_job(kernel: str, cfg: Dict[str, Any], n_chunks: int) -> List[Dict[
                 params["label_col"] = label_col
             specs.append({"weight": count, "params": params})
     elif kernel in ("logreg", "linreg"):
-        ml = dict(wl.get(kernel, {}) or wl.get("logreg", {}) or {})
-        overrides = cfg.get("_job_overrides") or {}
-        ml.update({k: v for k, v in overrides.items() if v is not None})
-        epochs = int(ml.get("epochs", 25))
-        lr = float(ml.get("lr", 0.05))
-        dataset = str(ml.get("dataset") or "").strip()
-        label_col = ml.get("label_col")
-        if dataset:
-            total_rows = int(ml.get("n_rows") or 0)
-            if total_rows <= 0:
-                try:
-                    from kernels.ml_train import count_csv_rows
-
-                    total_rows = count_csv_rows(dataset)
-                except Exception:
-                    total_rows = int(ml.get("n_samples", 400)) * n_chunks
-            each = max(1, math.ceil(total_rows / n_chunks))
-            for i in range(n_chunks):
-                offset = i * each
-                if offset >= total_rows:
-                    break
-                count = min(each, total_rows - offset)
-                params = {
-                    "shard": i,
-                    "dataset": dataset,
-                    "offset": offset,
-                    "count": count,
-                    "n_samples": count,
-                    "epochs": epochs,
-                    "lr": lr,
-                }
-                if label_col:
-                    params["label_col"] = label_col
-                specs.append({"weight": count, "params": params})
-        else:
-            n_samples = int(ml.get("n_samples", 400))
-            n_features = int(ml.get("n_features", 8))
-            for i in range(n_chunks):
-                specs.append({
-                    "weight": n_samples,
-                    "params": {
-                        "shard": i,
-                        "seed": 1000 + i * 17,
-                        "n_samples": n_samples,
-                        "n_features": n_features,
-                        "epochs": epochs,
-                        "lr": lr,
-                    },
-                })
+        raise ValueError(
+            f"built-in kernel {kernel!r} removed — upload code+data with kernel=userjob"
+        )
     else:  # irregular
         tasks = int(wl.get("irregular", {}).get("tasks", 24))
         max_work = int(wl.get("irregular", {}).get("max_work", 50000))
@@ -176,6 +132,14 @@ class MasterServer:
         self.project_root = project_root
         self.scheduler = Scheduler()
         self.packages = PackageStore()
+        self.users = UserRegistry(
+            heartbeat_timeout_sec=float(
+                (cfg.get("users") or {}).get("heartbeat_timeout_sec")
+                or cfg.get("scheduling", {}).get("heartbeat_timeout_sec")
+                or 20.0
+            )
+        )
+        self.job_queue = JobIntakeQueue(cfg.get("queue") or {})
         self.store = ObjectStore(cfg.get("storage", {}))
         log_cfg = cfg.get("logging", {})
         self.metrics = MetricsCollector(
@@ -239,7 +203,9 @@ class MasterServer:
             "storage": self.store.backend,
             "burst_mode": self.burst.mode,
             "gcs": self.scheduler.gcs.snapshot(),
-            "packages": self.packages.snapshot(),
+            "packages": self.packages.snapshot().get("count", 0),
+            "users": len(self.users.users),
+            "intake_depth": self.job_queue.depth(),
         }
 
     async def serve_forever(self) -> None:
@@ -343,6 +309,25 @@ class MasterServer:
                 if not self._operator_authed(msg):
                     return make(MessageType.ERROR, error="unauthorized")
                 return self._on_package_get(msg)
+            if mtype == MessageType.USER_HELLO.value:
+                if not self._operator_authed(msg):
+                    return make(MessageType.ERROR, error="unauthorized")
+                return self._on_user_hello(msg)
+            if mtype == MessageType.USER_HEARTBEAT.value:
+                ok = self.users.heartbeat(str(msg.get("user_id") or ""))
+                return (
+                    make(MessageType.USER_HEARTBEAT, ok=True)
+                    if ok
+                    else make(MessageType.ERROR, error="unknown user")
+                )
+            if mtype == MessageType.USER_BYE.value:
+                uid = str(msg.get("user_id") or "")
+                dropped = self.job_queue.cancel_for_user(uid) if uid else 0
+                gone = self.users.bye(uid) if uid else None
+                if dropped:
+                    print(f"[master] user {uid} logout dropped {dropped} queued job(s)", flush=True)
+                self.audit.emit("user_bye", user_id=uid, found=bool(gone), dropped_queued=dropped)
+                return make(MessageType.USER_BYE, ok=True, dropped_queued=dropped)
             if mtype == MessageType.JOB_SUBMIT.value:
                 if not self._operator_authed(msg):
                     self.audit.emit("auth_denied", action="JOB_SUBMIT")
@@ -351,6 +336,27 @@ class MasterServer:
             if mtype == MessageType.JOB_STATUS.value:
                 if self.require_token and not self._operator_authed(msg):
                     return make(MessageType.ERROR, error="unauthorized")
+                uid = msg.get("user_id")
+                if uid and uid in self.users.users:
+                    self.users.heartbeat(str(uid))
+                    u = self.users.users[str(uid)]
+                    if u.job_id and u.job_id in self.scheduler.jobs:
+                        return make(MessageType.JOB_STATUS, **self.scheduler.job_progress(u.job_id))
+                    # still waiting in intake?
+                    waiting = [
+                        w for w in self.job_queue.snapshot().get("waiting", [])
+                        if w.get("user_id") == uid
+                    ]
+                    if waiting or u.status == "queued":
+                        return make(
+                            MessageType.JOB_STATUS,
+                            queued=True,
+                            finished=False,
+                            done=0,
+                            total=0,
+                            position=self.job_queue.depth(),
+                            user_id=uid,
+                        )
                 jid = msg.get("job_id") or self.active_job_id
                 if not jid or jid not in self.scheduler.jobs:
                     return make(MessageType.ERROR, error="no job")
@@ -546,7 +552,39 @@ class MasterServer:
             meta=pkg.meta,
         )
 
+    def _on_user_hello(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        sess = self.users.hello(name=str(msg.get("name") or "user"), user_id=msg.get("user_id"))
+        self.audit.emit("user_hello", user_id=sess.user_id, name=sess.name)
+        print(f"[master] user online {sess.user_id} ({sess.name})", flush=True)
+        return make(MessageType.USER_HELLO, ok=True, user_id=sess.user_id, name=sess.name)
+
     def _on_job_submit(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+        """Enqueue or start immediately under max_running_jobs + load balance."""
+        user_id = msg.get("user_id")
+        if user_id:
+            self.users.heartbeat(str(user_id))
+        running = self.scheduler.running_job_count()
+        if running >= self.job_queue.max_running_jobs:
+            queued = self.job_queue.enqueue(dict(msg), user_id=str(user_id) if user_id else None)
+            if user_id and user_id in self.users.users:
+                self.users.users[str(user_id)].status = "queued"
+            self.audit.emit("job_queued", queue_id=queued.queue_id, user_id=user_id)
+            print(
+                f"[master] intake queue {queued.queue_id} (running={running}/"
+                f"{self.job_queue.max_running_jobs} backend={self.job_queue.backend})",
+                flush=True,
+            )
+            return make(
+                MessageType.JOB_SUBMIT,
+                ok=True,
+                queued=True,
+                queue_id=queued.queue_id,
+                position=self.job_queue.depth(),
+                package_id=msg.get("package_id"),
+            )
+        return self._admit_job(msg)
+
+    def _admit_job(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         kernel = msg.get("kernel", "heat2d")
         policy = msg.get("policy", "hybrid")
         n_chunks = int(msg.get("chunks", 8))
@@ -584,6 +622,9 @@ class MasterServer:
             placement=placement,
         )
         self.active_job_id = job.job_id
+        user_id = msg.get("user_id")
+        if user_id:
+            self.users.bind_job(str(user_id), job.job_id, package_id=overrides.get("package_id"))
         serial_proxy = self._serial_proxy(kernel, specs)
         self._job_metrics[job.job_id] = RunMetrics(
             job_id=job.job_id,
@@ -598,7 +639,7 @@ class MasterServer:
         )
         print(
             f"[master] job {job.job_id} kernel={kernel} tasks={len(job.tasks)} "
-            f"policy={policy} package={overrides.get('package_id')}",
+            f"policy={policy} package={overrides.get('package_id')} user={user_id}",
             flush=True,
         )
         self.audit.emit(
@@ -607,14 +648,27 @@ class MasterServer:
             kernel=kernel,
             tasks=len(job.tasks),
             package_id=overrides.get("package_id"),
+            user_id=user_id,
         )
         return make(
             MessageType.JOB_SUBMIT,
             ok=True,
+            queued=False,
             job_id=job.job_id,
             tasks=len(job.tasks),
             package_id=overrides.get("package_id"),
         )
+
+    def _drain_intake(self) -> None:
+        """Pull waiting jobs when running capacity frees up."""
+        while self.scheduler.running_job_count() < self.job_queue.max_running_jobs:
+            item = self.job_queue.dequeue()
+            if item is None:
+                break
+            print(f"[master] dequeue {item.queue_id} → admit", flush=True)
+            resp = self._admit_job(item.payload)
+            if resp.get("type") == MessageType.ERROR.value:
+                print(f"[master] admit failed for {item.queue_id}: {resp.get('error')}", flush=True)
 
     def _serial_proxy(self, kernel: str, specs: List[Dict[str, Any]]) -> float:
         # rough proxy for speedup denominator (seconds)
@@ -656,6 +710,11 @@ class MasterServer:
         if job.model:
             payload["model"] = job.model
         self.store.put_json("results", f"job_{job.job_id}", payload)
+        users = getattr(self, "users", None)
+        if users is not None:
+            for u in users.users.values():
+                if u.job_id == job.job_id:
+                    u.status = "done"
         if job.model:
             print(
                 f"[master] job {job.job_id} DONE ML model shards={job.model.get('shards')} "
@@ -693,18 +752,29 @@ class MasterServer:
         return out
 
     def _topology_snapshot(self) -> Dict[str, Any]:
-        """Live fabric view for the gateway dashboard (hub + workers + jobs)."""
+        """Live fabric view for the gateway dashboard (hub + workers + users + jobs)."""
         workers = self._worker_snapshot()
+        users = self.users.snapshot()
         links = [
             {
                 "from": w["worker_id"],
                 "to": "gateway",
                 "kind": w["kind"],
+                "role": "worker",
                 "active": int(w.get("load", 0)) > 0,
                 "paused": bool(w.get("paused")),
             }
             for w in workers
         ]
+        for u in users:
+            links.append({
+                "from": u["user_id"],
+                "to": "gateway",
+                "kind": "user",
+                "role": "user",
+                "active": u.get("status") in ("waiting", "submitting", "queued"),
+                "paused": False,
+            })
         jobs_out: List[Dict[str, Any]] = []
         for job in sorted(
             self.scheduler.jobs.values(),
@@ -747,11 +817,17 @@ class MasterServer:
                 "worker_count": len(workers),
                 "campus_count": sum(1 for w in workers if w["kind"] == "campus"),
                 "cloud_count": sum(1 for w in workers if w["kind"] == "cloud"),
+                "user_count": len(users),
+                "running_jobs": self.scheduler.running_job_count(),
+                "intake_depth": self.job_queue.depth(),
+                "queue_backend": self.job_queue.backend,
             },
             "workers": workers,
+            "users": users,
             "links": links,
             "jobs": jobs_out,
             "queue": {"pending": pending[:40], "assigned": assigned},
+            "intake": self.job_queue.snapshot(),
             "gcs": self.scheduler.gcs.snapshot(),
             "ts": time.time(),
         }
@@ -767,7 +843,7 @@ class MasterServer:
     async def _tick(self) -> None:
         busy_workers: set[str] = set()
         async with self._lock:
-            # heartbeat reclaim
+            # heartbeat reclaim workers + stale users
             now = time.time()
             stale = [
                 wid for wid, w in self.scheduler.workers.items()
@@ -776,22 +852,30 @@ class MasterServer:
             for wid in stale:
                 print(f"[master] heartbeat timeout reclaim {wid}", flush=True)
                 self.scheduler.unregister_worker(wid)
+            for uid in self.users.sweep_stale():
+                print(f"[master] user timeout logout {uid}", flush=True)
+                self.audit.emit("user_timeout", user_id=uid)
 
-            # assign tasks
+            # admit queued jobs when capacity frees
+            self._drain_intake()
+
+            # load-balanced assign across all unfinished jobs
             prefer_peer = self.peer_first
             cloud_only = False
             campus_only = False
-            if self.active_job_id:
-                job = self.scheduler.jobs.get(self.active_job_id)
-                if job and job.policy == "cloud_only":
-                    prefer_peer = False
-                    cloud_only = True
-                if job and job.policy == "campus_only":
-                    campus_only = True
+            # if any running job is campus_only, prefer that pool; mixed policies use peer_first
+            policies = {
+                self.scheduler.jobs[jid].policy
+                for jid in self.scheduler.unfinished_job_ids()
+                if jid in self.scheduler.jobs
+            }
+            if policies == {"cloud_only"}:
+                prefer_peer = False
+                cloud_only = True
+            elif policies == {"campus_only"}:
+                campus_only = True
 
-            place = None
-            if self.active_job_id and self.active_job_id in self.scheduler.jobs:
-                place = self.scheduler.jobs[self.active_job_id].placement
+            place = "spread"
             assignments = self.scheduler.assign_next(
                 peer_first=prefer_peer,
                 cloud_only=cloud_only,
