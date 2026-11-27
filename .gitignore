@@ -10,6 +10,7 @@ data/results/*
 !data/results/.gitkeep
 experiments/out/*
 !experiments/out/.gitkeep
+docs/images/gif_frames/
 .venv/
 venv/
 *.exe

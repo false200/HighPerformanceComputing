@@ -8,8 +8,10 @@
 > Consent-driven **campus fabric desk**: **worker nodes** donate CPU/RAM, **users** submit `train.py` + CSV, and a live **coordinator** on AWS shards work across the grid.
 
 <p align="center">
-  <img src="docs/images/console.png" alt="Lattice campus fabric desk console" width="920"/>
+  <img src="docs/images/console-demo.gif" alt="Lattice console: Elison, Mark, Priya worker nodes with Eliza/Bob users submitting jobs" width="920"/>
 </p>
+
+<p align="center"><sub>Live demo — worker nodes <b>Elison</b>, <b>Mark</b>, <b>Priya</b> · users <b>Eliza</b> / <b>Bob</b> submitting shards</sub></p>
 
 <p align="center">
   <a href="#features">Features</a> ·
